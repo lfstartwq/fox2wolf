@@ -37,7 +37,7 @@
 ### 从源码构建
 
 ```bash
-git clone https://github.com/yourname/fox2wolf
+git clone https://github.com/lfstartwq/fox2wolf
 cd fox2wolf
 cargo build --release
 # 二进制文件在 target/release/fox2wolf(.exe)

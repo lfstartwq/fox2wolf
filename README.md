@@ -37,7 +37,7 @@ Migrate Firefox's `places.sqlite` history (visits, URLs, timestamps, frecency, e
 ### Build from source
 
 ```bash
-git clone https://github.com/yourname/fox2wolf
+git clone https://github.com/lfstartwq/fox2wolf
 cd fox2wolf
 cargo build --release
 # Binary at target/release/fox2wolf(.exe)
