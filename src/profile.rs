@@ -64,7 +64,6 @@ impl Profile {
                 path: self.path.clone(),
             });
         }
-        check_db_locked(&places)?;
         Ok(())
     }
 }
@@ -357,34 +356,6 @@ pub fn find_profile(browser: Browser, query: &str) -> Result<Profile> {
             query: format!("{} (available: {:?})", query, all_names),
         })
     }
-}
-
-/// Check if database is locked
-pub fn check_db_locked(db_path: &Path) -> Result<()> {
-    // Check parent.lock / .parentlock
-    let parent_lock = db_path.with_file_name("parent.lock");
-    let dot_parentlock = db_path.with_file_name(".parentlock");
-    if parent_lock.exists() || dot_parentlock.exists() {
-        return Err(Error::DatabaseLocked {
-            path: db_path.to_path_buf(),
-        });
-    }
-
-    // Try opening in read-only mode to detect exclusive lock
-    let conn = rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    );
-    if let Err(e) = conn {
-        if e.to_string().contains("database is locked") {
-            return Err(Error::DatabaseLocked {
-                path: db_path.to_path_buf(),
-            });
-        }
-        return Err(Error::Sqlite(e));
-    }
-
-    Ok(())
 }
 
 /// List all profiles (for --list-profiles)

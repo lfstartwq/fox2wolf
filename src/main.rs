@@ -4,7 +4,7 @@ use clap::Parser;
 use fox2wolf::error::Result;
 use fox2wolf::migrate::{migrate, MigrationContext};
 use fox2wolf::profile::{discover_profiles, find_profile, get_default_profile, Browser, Profile};
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -71,9 +71,6 @@ fn main() -> Result<()> {
         dst_profile.path.display()
     );
 
-    // Check if browsers are closed
-    check_browsers_closed()?;
-
     // Create migration context
     let mut ctx = MigrationContext::new(src_profile, dst_profile, args.dry_run);
     ctx.skip_confirmation = args.yes;
@@ -130,20 +127,12 @@ fn list_profiles_cmd() -> Result<()> {
         } else {
             for p in profiles {
                 let default_mark = if p.is_default { " ⭐ (default)" } else { "" };
-                println!("  - {} [{}]", p.name, p.path.display());
-                println!("    Path: {}{}", p.path.display(), default_mark);
+                println!("  - {}{}", p.name, default_mark);
+                println!("    Path: {}", p.path.display());
             }
         }
         println!();
     }
-    Ok(())
-}
-
-fn check_browsers_closed() -> Result<()> {
-    // Can only check lock files, cannot force check processes
-    // Actual lock check happens in profile.validate()
-    warn!("Ensure Firefox and LibreWolf are completely closed!");
-    warn!("Migration will fail due to database lock if browsers are running.");
     Ok(())
 }
 
