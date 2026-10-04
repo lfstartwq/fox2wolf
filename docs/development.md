@@ -1,0 +1,166 @@
+# Development Guide
+
+## Build & Test Commands
+
+```bash
+# Debug build
+cargo build
+
+# Release build (optimized, stripped)
+cargo build --release
+
+# Run all tests
+cargo test
+
+# Run specific test
+cargo test test_full_migration
+
+# Run with output
+cargo test -- --nocapture
+
+# Check formatting
+cargo fmt --check
+
+# Lint
+cargo clippy -- -D warnings
+
+# Generate docs
+cargo doc --open
+```
+
+## Per-File Map
+
+| File | Responsibility | Key Types/Functions |
+|------|----------------|---------------------|
+| `src/main.rs` | CLI entry, argument parsing, logging setup | `Args`, `main()`, `init_logging()`, `resolve_profile()`, `list_profiles_cmd()` |
+| `src/lib.rs` | Public API re-exports | `pub use` for all modules |
+| `src/error.rs` | Error enum, `Result` alias | `Error`, `Result`, `is_db_locked()` |
+| `src/models.rs` | Data structures, serialization | `Origin`, `Place`, `Visit`, `VisitType`, `MigrationStats`, `Microseconds` |
+| `src/profile.rs` | Profile discovery & validation | `Browser`, `Profile`, `discover_profiles()`, `get_default_profile()`, `find_profile()`, `check_db_locked()` |
+| `src/db.rs` | SQLite connections, schema, transactions | `open_source_db()`, `open_dest_db()`, `ensure_schema()`, `AutoRollback`, `PRAGMA_SAFE`, `get_table_counts()` |
+| `src/dedup.rs` | Merge/deduplication algorithms | `OriginMap`, `PlaceMap`, `VisitDedupSet`, `upsert_origin()`, `upsert_place()`, `upsert_visit()`, `recalc_frecency()`, `update_meta()` |
+| `src/migrate.rs` | Migration orchestration | `MigrationContext`, `migrate()`, `migrate_origins()`, `migrate_places()`, `migrate_visits()`, `validate_migration()` |
+| `tests/integration_test.rs` | End-to-end tests | `test_full_migration()`, `test_merge_deduplication()`, `test_discover_profiles()` |
+
+## Timing Constants
+
+| Constant | Location | Value | Purpose |
+|----------|----------|-------|---------|
+| `BATCH_SIZE` | (removed) | 5000 | Would batch inserts; currently single-row per execute |
+| `MAX_TX_ROWS` | `migrate.rs:19` | 100_000 | Max rows per transaction before committing (defined, unused; batched commits deferred) |
+| Progress bar | `migrate.rs` | `total_items = origins + places + visits` | Updates per row |
+
+> Note: The `BATCH_SIZE` constant was removed during cleanup. `MAX_TX_ROWS` is defined in `migrate.rs` but currently unused; current implementation streams row-by-row within a single transaction. Batched commits are deferred to a future release. For >1M rows, consider re-adding batched commits.
+
+## Testing Conventions
+
+- **Unit tests**: In `#[cfg(test)]` modules alongside code (`dedup.rs`, `migrate.rs`, `main.rs`)
+- **Integration tests**: `tests/integration_test.rs` — uses `tempdir`, creates real SQLite files, exercises full pipeline
+- **Test isolation**: Each test creates fresh temp directories; no shared state
+- **Dry-run tests**: Verify read counts without writes
+- **Merge tests**: Pre-populate destination, verify `visit_count` summation and `last_visit_date` max logic
+
+Run integration tests with:
+```bash
+cargo test --test integration_test -- --nocapture
+```
+
+## Extension Recipes
+
+### Add bookmark migration
+
+1. Add `moz_bookmarks` and `moz_bookmarks_deleted` to `CREATE_TABLES_SQL` in `db.rs`
+2. Add `Bookmark` struct to `models.rs` with `from_row`/`to_insert_params`
+3. Add `BookmarkMap` type and `build_bookmark_map`/`upsert_bookmark` to `dedup.rs`
+   - Dedup key: `(fk, type)` for bookmarks, `guid` for folders
+   - Parent folder ID remapping via folder map
+4. Add `migrate_bookmarks` phase in `migrate.rs` after Places, before Visits
+   - Requires folder tree walk to resolve parent IDs
+5. Add `--include-bookmarks` CLI flag in `main.rs`
+
+### Add keyword/search engine migration
+
+Similar pattern: `moz_keywords` table, `Keyword` model, dedup on `(keyword, place_id)`.
+
+### Support Thunderbird / other Gecko apps
+
+- Extend `Browser` enum in `profile.rs`
+- Add qualifier in `project_dirs_qualifier()`
+- Verify `places.sqlite` schema compatibility (usually identical)
+
+### Async migration (for GUI progress)
+
+Current sync model blocks thread. For async:
+1. Replace `rusqlite` with `sqlx` + `sqlite` (requires async runtime)
+2. Or keep `rusqlite` in blocking thread pool (`tokio::task::spawn_blocking`)
+3. Stream progress via `mpsc` channel to UI
+
+### Custom frecency algorithm
+
+Firefox's actual frecency is more complex (decay curves, typed boost). Current simplified version in `recalc_frecency`:
+
+```sql
+frecency = visit_count * 1000 / (days_since_last_visit + 1)
+```
+
+To match Firefox exactly, port the C++ algorithm from `mozilla-central` or call into `libplaces` via FFI (complex).
+
+## Cross-Platform Notes
+
+### Windows
+- Default profiles: `%APPDATA%\Mozilla\Firefox\Profiles\`, `%APPDATA%\librewolf\Profiles\`
+- Lock files: `parent.lock` (Firefox), `.parentlock` (LibreWolf)
+- Tested on Windows 10/11
+
+### Linux
+- Default profiles: `~/.mozilla/firefox/`, `~/.librewolf/`
+- Lock files: `.parentlock` (both)
+- `$XDG_CONFIG_HOME` respected via `directories-next`
+
+### macOS
+- Default profiles: `~/Library/Application Support/Firefox/Profiles/`, `~/Library/Application Support/librewolf/Profiles/`
+- Lock files: `.parentlock`
+- App sandbox may require Full Disk Access for `~/Library`
+
+### Path handling
+All paths use `std::path::PathBuf` — no platform-specific string manipulation. `directories-next` abstracts config/data dirs.
+
+## Debugging Tips
+
+### Inspect database during migration
+```bash
+# Copy DB mid-migration (if not in transaction)
+sqlite3 places.sqlite ".schema"
+sqlite3 places.sqlite "SELECT * FROM moz_places LIMIT 5;"
+```
+
+### Enable trace logging
+```bash
+RUST_LOG=trace fox2wolf --dry-run
+```
+
+### Profile lock detection
+```bash
+# Check lock files
+ls -la ~/.mozilla/firefox/*.default*/parent.lock
+ls -la ~/.librewolf/*.default*/.parentlock
+```
+
+### Verify schema compatibility
+```bash
+sqlite3 ~/.mozilla/firefox/*.default*/places.sqlite ".schema" > ff_schema.sql
+sqlite3 ~/.librewolf/*.default*/places.sqlite ".schema" > lw_schema.sql
+diff ff_schema.sql lw_schema.sql
+```
+
+## Release Checklist
+
+- [ ] Update version in `Cargo.toml`
+- [ ] Update `CHANGELOG.md` (if exists)
+- [ ] `cargo test --all-targets`
+- [ ] `cargo clippy -- -D warnings`
+- [ ] `cargo fmt --check`
+- [ ] `cargo build --release`
+- [ ] Test binary on target platforms (Windows, Linux, macOS)
+- [ ] `cargo publish --dry-run`
+- [ ] `cargo publish`
