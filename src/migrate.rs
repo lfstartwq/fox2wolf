@@ -1,3 +1,6 @@
+// Copyright (C) 2026 lfstartwq
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Core migration logic
 
 use crate::db::{ensure_schema, get_table_counts, open_dest_db, open_source_db};

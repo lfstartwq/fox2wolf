@@ -1,3 +1,6 @@
+// Copyright (C) 2026 lfstartwq
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Integration tests
 
 use fox2wolf::db::{get_table_counts, open_dest_db, CREATE_TABLES_SQL};

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 lfstartwq
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Deduplication and merge algorithms
 
 use crate::error::Result;

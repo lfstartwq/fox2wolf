@@ -1,3 +1,6 @@
+// Copyright (C) 2026 lfstartwq
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Profile discovery and parsing
 
 use crate::error::{Error, Result};

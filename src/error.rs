@@ -1,3 +1,6 @@
+// Copyright (C) 2026 lfstartwq
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Error type definitions
 
 use std::path::PathBuf;

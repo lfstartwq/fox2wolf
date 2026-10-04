@@ -4,14 +4,16 @@
 
 Migrate Firefox's `places.sqlite` history (visits, URLs, timestamps, frecency, etc.) to LibreWolf with **merge deduplication**, **batch processing for large datasets**, and **progress display**.
 
+**Language**: [English](README.md) | [简体中文](README.zh-CN.md)
+
 ## Features
 
-- ✅ **Merge deduplication**: Same URL automatically merges `visit_count`, preserves earliest first visit and latest visit time
-- ✅ **Large dataset optimization**: >500k records with batched transactions, disabled `synchronous`, WAL mode, progress bar
-- ✅ **Auto Profile detection**: Reads `profiles.ini` to locate default Profile, supports manual override
-- ✅ **Safety first**: Mandatory confirmation before migration, source DB read-only, destination DB transaction-protected, dry-run mode
-- ✅ **UTC timestamp preservation**: Firefox PRTime (microseconds) migrated as-is, no timezone conversion
-- ✅ **Cross-platform**: Works on Windows / Linux / macOS
+- **Merge deduplication**: Same URL automatically merges `visit_count`, preserves earliest first visit and latest visit time
+- **Large dataset optimization**: >500k records with batched transactions, disabled `synchronous`, WAL mode, progress bar
+- **Auto Profile detection**: Reads `profiles.ini` to locate default Profile, supports manual override
+- **Safety first**: Mandatory confirmation before migration, source DB read-only, destination DB transaction-protected, dry-run mode
+- **UTC timestamp preservation**: Firefox PRTime (microseconds) migrated as-is, no timezone conversion
+- **Cross-platform**: Works on Windows / Linux / macOS
 
 ## Dependencies
 
@@ -99,7 +101,7 @@ Options:
 
 ## Pre-migration checklist
 
-⚠️ **Important**:
+**Important**:
 
 1. **Completely close Firefox and LibreWolf** (check Task Manager, ensure no leftover processes)
 2. **Manually backup LibreWolf's `places.sqlite`**:
@@ -136,6 +138,36 @@ When same URL exists:
 - `last_visit_date` max (latest visit)
 - `frecency` recalculated after migration completes (see note below)
 
-## License
+## Develop
+
+**Documentation**: [docs/architecture.md](docs/architecture.md) | [docs/development.md](docs/development.md)
+
+### Code Structure
+
+```
+fox2wolf/
+├── src/
+│   ├── main.rs          # CLI entry point
+│   ├── lib.rs           # Public API re-exports
+│   ├── error.rs         # Error types
+│   ├── models.rs        # Data models (Origin, Place, Visit, etc.)
+│   ├── profile.rs       # Profile discovery & validation
+│   ├── db.rs            # SQLite connections, PRAGMAs, transactions
+│   ├── dedup.rs         # Merge/dedupe algorithms, ID remapping
+│   └── migrate.rs       # Migration orchestration
+├── tests/
+│   └── integration_test.rs  # End-to-end tests
+├── docs/
+│   ├── architecture.md              # Architecture notes
+│   ├── commit-message-guidelines.md # Commit message guidelines
+│   └── development.md               # Development guide
+├── Cargo.toml
+├── Cargo.lock
+├── README.md
+├── README.zh-CN.md
+└── CHANGELOG.md
+```
+
+## LICENSE
 
 GPL-3.0-only

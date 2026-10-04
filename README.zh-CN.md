@@ -4,14 +4,16 @@
 
 将 Firefox 的 `places.sqlite` 历史记录（访问记录、URL、时间戳、frecency 等）迁移到 LibreWolf，支持**合并去重**、**大数据量分批处理**、**进度显示**。
 
+**语言**: [English](README.md) | [简体中文](README.zh-CN.md)
+
 ## 特性
 
-- ✅ **合并去重**：同 URL 自动合并 `visit_count`，保留最早首次访问和最晚访问时间
-- ✅ **大数据量优化**：>50 万条记录支持分批事务、关闭 `synchronous`、WAL 模式、进度条
-- ✅ **自动 Profile 检测**：读取 `profiles.ini` 定位默认 Profile，支持手动指定
-- ✅ **安全第一**：迁移前强制确认、源库只读打开、目标库事务保护、干运行模式
-- ✅ **UTC 时间戳保持**：Firefox PRTime (微秒) 原样迁移，不做时区转换
-- ✅ **跨平台**：Windows / Linux / macOS 均可用
+- **合并去重**：同 URL 自动合并 `visit_count`，保留最早首次访问和最晚访问时间
+- **大数据量优化**：>50 万条记录支持分批事务、关闭 `synchronous`、WAL 模式、进度条
+- **自动 Profile 检测**：读取 `profiles.ini` 定位默认 Profile，支持手动指定
+- **安全第一**：迁移前强制确认、源库只读打开、目标库事务保护、干运行模式
+- **UTC 时间戳保持**：Firefox PRTime (微秒) 原样迁移，不做时区转换
+- **跨平台**：Windows / Linux / macOS 均可用
 
 ## 依赖
 
@@ -99,7 +101,7 @@ Options:
 
 ## 迁移前准备
 
-⚠️ **重要**：
+**重要**：
 
 1. **完全关闭 Firefox 和 LibreWolf**（检查任务管理器，确保无残留进程）
 2. **手动备份 LibreWolf 的 `places.sqlite`**：
@@ -136,7 +138,35 @@ Options:
 - `last_visit_date` 取最大（最晚访问）
 - `frecency` 迁移完成后重算（见下方说明）
 
-> **关于 frecency 的说明**：重算使用简化公式（`visit_count * 1000 / (days_since_last_visit + 1)`）。Firefox 实际算法使用指数衰减曲线并包含 typed 访问加权。简化版本产生合理的排序，但可能与 Firefox 的确切值不同。
+## 开发
+
+**文档**: [docs/architecture.md](docs/architecture.md) | [docs/development.md](docs/development.md)
+
+### 代码结构
+
+```
+fox2wolf/
+├── src/
+│   ├── main.rs          # CLI 入口
+│   ├── lib.rs           # 公共 API 导出
+│   ├── error.rs         # 错误类型
+│   ├── models.rs        # 数据模型 (Origin, Place, Visit 等)
+│   ├── profile.rs       # Profile 发现与验证
+│   ├── db.rs            # SQLite 连接、PRAGMA、事务
+│   ├── dedup.rs         # 合并/去重算法、ID 重映射
+│   └── migrate.rs       # 迁移编排
+├── tests/
+│   └── integration_test.rs  # 端到端测试
+├── docs/
+│   ├── architecture.md              # 架构说明
+│   ├── commit-message-guidelines.md # 提交信息规范
+│   └── development.md               # 开发指南
+├── Cargo.toml
+├── Cargo.lock
+├── README.md
+├── README.zh-CN.md
+└── CHANGELOG.md
+```
 
 ## 许可证
 

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 lfstartwq
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! fox2wolf - Firefox to LibreWolf history migration tool
 //!
 //! Migrates Firefox places.sqlite history to LibreWolf,
