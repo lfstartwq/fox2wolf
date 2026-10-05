@@ -34,12 +34,8 @@ fn get_text_lossy_required(row: &Row, idx: usize) -> rusqlite::Result<String> {
     let val = row.get_ref(idx)?;
     match val {
         rusqlite::types::ValueRef::Null => Ok(String::new()),
-        rusqlite::types::ValueRef::Text(bytes) => {
-            Ok(String::from_utf8_lossy(bytes).into_owned())
-        }
-        rusqlite::types::ValueRef::Blob(bytes) => {
-            Ok(String::from_utf8_lossy(bytes).into_owned())
-        }
+        rusqlite::types::ValueRef::Text(bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
+        rusqlite::types::ValueRef::Blob(bytes) => Ok(String::from_utf8_lossy(bytes).into_owned()),
         _ => {
             // For other types (Integer, Real), convert to string
             Ok(val.as_str()?.to_string())

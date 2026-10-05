@@ -141,7 +141,8 @@ pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
 
         // --- Migrate Visits ---
         pb.set_message("Migrating Visits...");
-        stats.visits_read = migrate_visits(&src_conn, &mut tx, &mut stats, &pb, ctx, &place_id_map)?;
+        stats.visits_read =
+            migrate_visits(&src_conn, &mut tx, &mut stats, &pb, ctx, &place_id_map)?;
 
         // Commit transaction
         if !ctx.dry_run {
@@ -280,7 +281,10 @@ fn migrate_visits(
 
         let visit = Visit::from_row(row)?;
         // Rewrite place_id using the mapping from migrate_places
-        let new_place_id = place_id_map.get(&visit.place_id).copied().unwrap_or(visit.place_id);
+        let new_place_id = place_id_map
+            .get(&visit.place_id)
+            .copied()
+            .unwrap_or(visit.place_id);
         let mut new_visit = visit.clone();
         new_visit.place_id = new_place_id;
         let inserted = upsert_visit(tx, &new_visit, &mut visit_dedup, &HashMap::new())?;
