@@ -336,13 +336,13 @@ mod tests {
     use super::*;
     use crate::db::open_dest_db;
     use crate::profile::Profile;
-    use std::path::PathBuf;
+    use std::path::Path;
     use tempfile::tempdir;
 
-    fn create_test_profile(dir: &PathBuf, name: &str) -> Profile {
+    fn create_test_profile(dir: &Path, name: &str) -> Profile {
         Profile {
             name: name.into(),
-            path: dir.clone(),
+            path: dir.to_path_buf(),
             is_default: true,
             is_relative: true,
             browser: crate::profile::Browser::Firefox,

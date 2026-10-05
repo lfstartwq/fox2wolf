@@ -5,17 +5,17 @@
 
 use fox2wolf::db::{get_table_counts, open_dest_db, CREATE_TABLES_SQL};
 use fox2wolf::{discover_profiles, migrate, Browser, MigrationContext, MigrationStats, Profile};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
-fn create_test_db(dir: &PathBuf) -> PathBuf {
+fn create_test_db(dir: &Path) -> PathBuf {
     let db_path = dir.join("places.sqlite");
     let conn = open_dest_db(&db_path).unwrap();
     conn.execute_batch(CREATE_TABLES_SQL).unwrap();
     db_path
 }
 
-fn insert_test_data(db_path: &PathBuf) {
+fn insert_test_data(db_path: &Path) {
     let conn = open_dest_db(db_path).unwrap();
 
     // origins
