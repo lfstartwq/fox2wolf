@@ -59,10 +59,10 @@ fn insert_test_data(db_path: &Path) {
     ).unwrap();
 }
 
-fn create_profile(dir: &PathBuf, name: &str, browser: Browser) -> Profile {
+fn create_profile(dir: &Path, name: &str, browser: Browser) -> Profile {
     Profile {
         name: name.into(),
-        path: dir.clone(),
+        path: dir.to_path_buf(),
         is_default: true,
         is_relative: true,
         browser,
@@ -206,17 +206,19 @@ fn test_discover_profiles() {
 
 #[test]
 fn test_migration_stats_display() {
-    let mut stats = MigrationStats::default();
-    stats.origins_read = 10;
-    stats.origins_inserted = 8;
-    stats.origins_merged = 2;
-    stats.places_read = 100;
-    stats.places_inserted = 90;
-    stats.places_merged = 10;
-    stats.visits_read = 500;
-    stats.visits_inserted = 480;
-    stats.visits_skipped = 20;
-    stats.duration_ms = 1234;
+    let stats = MigrationStats {
+        origins_read: 10,
+        origins_inserted: 8,
+        origins_merged: 2,
+        places_read: 100,
+        places_inserted: 90,
+        places_merged: 10,
+        places_skipped: 0,
+        visits_read: 500,
+        visits_inserted: 480,
+        visits_skipped: 20,
+        duration_ms: 1234,
+    };
 
     stats.print_summary(); // Just verify no panic
 }
