@@ -13,6 +13,7 @@ use crate::models::{MigrationStats, Origin, Place, Visit};
 use crate::profile::Profile;
 use indicatif::{ProgressBar, ProgressStyle};
 use rusqlite::{Connection, Transaction};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -131,7 +132,8 @@ pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
 
         // --- Migrate Places ---
         pb.set_message("Migrating Places...");
-        stats.places_read = migrate_places(&src_conn, &mut tx, &mut stats, &pb, ctx)?;
+        let place_id_map = migrate_places(&src_conn, &mut tx, &mut stats, &pb, ctx)?;
+        stats.places_read = place_id_map.len();
 
         if ctx.is_cancelled() {
             return Err(Error::Other("User cancelled".into()));
@@ -139,7 +141,7 @@ pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
 
         // --- Migrate Visits ---
         pb.set_message("Migrating Visits...");
-        stats.visits_read = migrate_visits(&src_conn, &mut tx, &mut stats, &pb, ctx)?;
+        stats.visits_read = migrate_visits(&src_conn, &mut tx, &mut stats, &pb, ctx, &place_id_map)?;
 
         // Commit transaction
         if !ctx.dry_run {
@@ -216,12 +218,12 @@ fn migrate_places(
     stats: &mut MigrationStats,
     pb: &ProgressBar,
     ctx: &MigrationContext,
-) -> Result<usize> {
+) -> Result<HashMap<i64, i64>> {
     let mut place_map = build_place_map(tx)?;
     let mut origin_map = build_origin_map(tx)?;
     let mut stmt = src.prepare("SELECT * FROM moz_places ORDER BY id")?;
     let mut rows = stmt.query([])?;
-    let mut count = 0;
+    let mut place_id_map = HashMap::new();
 
     while let Some(row) = rows.next()? {
         if ctx.is_cancelled() {
@@ -229,10 +231,10 @@ fn migrate_places(
         }
 
         let place = Place::from_row(row)?;
+        let old_place_id = place.id;
 
         // Ensure origin exists first
         let new_origin_id = if let Some(orig_id) = place.origin_id {
-            // Find origin in source database
             let mut origin_stmt = src.prepare("SELECT * FROM moz_origins WHERE id = ?")?;
             if let Ok(orig_row) = origin_stmt.query_row([orig_id], Origin::from_row) {
                 Some(upsert_origin(tx, &orig_row, &mut origin_map)?)
@@ -243,17 +245,18 @@ fn migrate_places(
             None
         };
 
-        let (_, merged) = upsert_place(tx, &place, &mut place_map, new_origin_id)?;
+        let (new_place_id, merged) = upsert_place(tx, &place, &mut place_map, new_origin_id)?;
+        place_id_map.insert(old_place_id, new_place_id);
+
         if merged {
             stats.places_merged += 1;
         } else {
             stats.places_inserted += 1;
         }
-        count += 1;
         pb.inc(1);
     }
 
-    Ok(count)
+    Ok(place_id_map)
 }
 
 /// Migrate Visits
@@ -263,9 +266,9 @@ fn migrate_visits(
     stats: &mut MigrationStats,
     pb: &ProgressBar,
     ctx: &MigrationContext,
+    place_id_map: &HashMap<i64, i64>,
 ) -> Result<usize> {
     let mut visit_dedup = build_visit_dedup_set(tx)?;
-    let place_map = build_place_map(tx)?;
     let mut stmt = src.prepare("SELECT * FROM moz_historyvisits ORDER BY id")?;
     let mut rows = stmt.query([])?;
     let mut count = 0;
@@ -276,7 +279,11 @@ fn migrate_visits(
         }
 
         let visit = Visit::from_row(row)?;
-        let inserted = upsert_visit(tx, &visit, &mut visit_dedup, &place_map)?;
+        // Rewrite place_id using the mapping from migrate_places
+        let new_place_id = place_id_map.get(&visit.place_id).copied().unwrap_or(visit.place_id);
+        let mut new_visit = visit.clone();
+        new_visit.place_id = new_place_id;
+        let inserted = upsert_visit(tx, &new_visit, &mut visit_dedup, &HashMap::new())?;
 
         if inserted {
             stats.visits_inserted += 1;

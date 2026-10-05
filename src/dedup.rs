@@ -195,7 +195,7 @@ pub fn upsert_visit(
     tx: &mut Transaction,
     visit: &Visit,
     visit_dedup: &mut VisitDedupSet,
-    place_id_map: &PlaceMap,
+    _place_id_map: &PlaceMap,
 ) -> Result<bool> {
     let key = visit.dedup_key();
 
@@ -203,19 +203,12 @@ pub fn upsert_visit(
         return Ok(false); // Already exists, skip
     }
 
-    // Rewrite place_id
-    let place_id_str = key.split(':').next().unwrap_or("");
-    let new_place_id = place_id_map
-        .get(place_id_str)
-        .map(|(_, new_id)| *new_id)
-        .unwrap_or(visit.place_id);
-
     tx.execute(
         "INSERT INTO moz_historyvisits (from_visit, place_id, visit_date, visit_type, session, source, triggeringPlaceId)
          VALUES (?, ?, ?, ?, ?, ?, ?)",
         rusqlite::params![
             visit.from_visit,
-            new_place_id,
+            visit.place_id,
             visit.visit_date,
             visit.visit_type.as_i32(),
             visit.session,
