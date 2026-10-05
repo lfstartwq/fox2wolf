@@ -35,11 +35,11 @@ cargo doc --open
 | `src/main.rs` | CLI entry, argument parsing, logging setup | `Args`, `main()`, `init_logging()`, `resolve_profile()`, `list_profiles_cmd()` |
 | `src/lib.rs` | Public API re-exports | `pub use` for all modules |
 | `src/error.rs` | Error enum, `Result` alias | `Error`, `Result`, `is_db_locked()` |
-| `src/models.rs` | Data structures, serialization | `Origin`, `Place`, `Visit`, `VisitType`, `MigrationStats`, `Microseconds` |
+| `src/models.rs` | Data structures, serialization, UTF-8 handling | `Origin`, `Place`, `Visit`, `VisitType`, `MigrationStats`, `Microseconds`, `get_text_lossy()`, `get_text_lossy_required()` |
 | `src/profile.rs` | Profile discovery & validation | `Browser`, `Profile`, `discover_profiles()`, `get_default_profile()`, `find_profile()`, `check_db_locked()` |
 | `src/db.rs` | SQLite connections, schema, transactions | `open_source_db()`, `open_dest_db()`, `ensure_schema()`, `AutoRollback`, `PRAGMA_SAFE`, `get_table_counts()` |
 | `src/dedup.rs` | Merge/deduplication algorithms | `OriginMap`, `PlaceMap`, `VisitDedupSet`, `upsert_origin()`, `upsert_place()`, `upsert_visit()`, `recalc_frecency()`, `update_meta()` |
-| `src/migrate.rs` | Migration orchestration | `MigrationContext`, `migrate()`, `migrate_origins()`, `migrate_places()`, `migrate_visits()`, `validate_migration()` |
+| `src/migrate.rs` | Migration orchestration | `MigrationContext`, `migrate()`, `migrate_origins()`, `migrate_places()` (returns `HashMap<old_place_id, new_place_id>`), `migrate_visits()` (accepts `place_id_map`), `validate_migration()` |
 | `tests/integration_test.rs` | End-to-end tests | `test_full_migration()`, `test_merge_deduplication()`, `test_discover_profiles()` |
 
 ## Timing Constants
@@ -59,6 +59,20 @@ cargo doc --open
 - **Test isolation**: Each test creates fresh temp directories; no shared state
 - **Dry-run tests**: Verify read counts without writes
 - **Merge tests**: Pre-populate destination, verify `visit_count` summation and `last_visit_date` max logic
+
+Run integration tests with:
+```bash
+cargo test --test integration_test -- --nocapture
+```
+
+## Testing Conventions
+
+- **Unit tests**: In `#[cfg(test)]` modules alongside code (`dedup.rs`, `migrate.rs`, `main.rs`)
+- **Integration tests**: `tests/integration_test.rs` — uses `tempdir`, creates real SQLite files, exercises full pipeline
+- **Test isolation**: Each test creates fresh temp directories; no shared state
+- **Dry-run tests**: Verify read counts without writes
+- **Merge tests**: Pre-populate destination, verify `visit_count` summation and `last_visit_date` max logic
+- **Empty DB migration test**: Verify migration works when destination database is empty (tests `test_full_migration`)
 
 Run integration tests with:
 ```bash
@@ -104,6 +118,20 @@ frecency = visit_count * 1000 / (days_since_last_visit + 1)
 ```
 
 To match Firefox exactly, port the C++ algorithm from `mozilla-central` or call into `libplaces` via FFI (complex).
+
+### UTF-8 handling in Firefox data
+
+Firefox's `places.sqlite` may contain invalid UTF-8 in TEXT columns. The tool uses `row.get_ref()` with `ValueRef::Text`/`ValueRef::Blob` to access raw bytes, then applies `String::from_utf8_lossy()` for lossy conversion. See `models.rs`: `get_text_lossy()` and `get_text_lossy_required()`.
+
+### Empty destination database migration
+
+The tool now handles migration to an empty LibreWolf profile correctly. The fix:
+
+1. `migrate_places` returns a `HashMap<old_place_id, new_place_id>` mapping
+2. `migrate_visits` receives this map and uses it to rewrite `place_id` before insertion
+3. This ensures visits can reference newly created places even when the destination database starts empty
+
+See `migrate.rs`: `migrate_places()` (returns `HashMap<i64, i64>`) and `migrate_visits()` (accepts `&HashMap<i64, i64>`).
 
 ## Cross-Platform Notes
 

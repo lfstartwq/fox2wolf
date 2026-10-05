@@ -126,7 +126,7 @@ Options:
 
 - `moz_origins.id`: Dedupe by `(host, prefix)`, build `old_id → new_id` map
 - `moz_places.id`: Dedupe by `(url_hash, url)`, build map, generate new UUID v4 as GUID
-- `moz_historyvisits.id`: Auto-increment reassigned, `place_id` rewritten via map, `from_visit` re-chained by visit order
+- `moz_historyvisits.id`: Auto-increment reassigned, `place_id` rewritten via map from `migrate_places`, `from_visit` re-chained by visit order
 
 ### Merge rules
 
@@ -137,6 +137,10 @@ When same URL exists:
 - `foreign_count` summed
 - `last_visit_date` max (latest visit)
 - `frecency` recalculated after migration completes (see note below)
+
+### UTF-8 handling
+
+Firefox's `places.sqlite` may contain invalid UTF-8 sequences in TEXT columns (e.g., `description`). The tool uses `row.get_ref()` with lossy UTF-8 conversion to handle this gracefully.
 
 ## Develop
 

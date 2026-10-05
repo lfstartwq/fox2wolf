@@ -138,6 +138,10 @@ Options:
 - `last_visit_date` 取最大（最晚访问）
 - `frecency` 迁移完成后重算（见下方说明）
 
+### UTF-8 处理
+
+Firefox 的 `places.sqlite` 在 TEXT 列（如 `description`）中可能包含非法 UTF-8 序列。工具使用 `row.get_ref()` 配合 `String::from_utf8_lossy` 进行容错转换。
+
 ## 开发
 
 **文档**: [docs/architecture.md](docs/architecture.md) | [docs/development.md](docs/development.md)

@@ -108,7 +108,7 @@ UPDATE moz_meta
 |-------|-----------|---------|---------|
 | `moz_origins` | `id` | `id` | `(host, prefix)` unique key → new auto-increment |
 | `moz_places` | `id` | `id` | `(url_hash, url)` dedup key → new auto-increment + new UUID v4 GUID |
-| `moz_historyvisits` | `id` | `id` | Auto-increment reassigned; `place_id` rewritten via PlaceMap; `from_visit` re-chained by visit_date ordering |
+| `moz_historyvisits` | `id` | `id` | Auto-increment reassigned; `place_id` rewritten via map from `migrate_places`; `from_visit` re-chained by visit_date ordering |
 
 ## Merge Deduplication Logic
 
@@ -144,6 +144,12 @@ frecency = visit_count * 1000 / (days_since_last_visit + 1)
 ```
 
 Firefox's actual algorithm (from `mozilla-central`) uses exponential decay curves with typed visit boosts and bucket-based aging. This simplified version produces reasonable ordering for most users but may not match Firefox's exact frecency values. For exact compatibility, porting the C++ algorithm or linking against `libplaces` would be required.
+
+### UTF-8 Handling in Firefox Data
+Firefox's `places.sqlite` may contain invalid UTF-8 sequences in TEXT columns (notably `description`, `title`, `site_name`). The tool handles this by using `row.get_ref()` to access raw `ValueRef::Text` and `ValueRef::Blob` bytes, then applying `String::from_utf8_lossy()` for lossy conversion. See `models.rs`: `get_text_lossy()` and `get_text_lossy_required()`.
+
+### Empty LibreWolf Profile Migration
+Previously, migrating to an empty LibreWolf profile would fail the visit migration because `migrate_visits` built its `place_id` map from the destination database (which was empty). Fixed by having `migrate_places` return a `HashMap<old_place_id, new_place_id>` that `migrate_visits` uses to rewrite `place_id` before insertion. This ensures visits can reference newly created places even when the destination database starts empty.
 
 ## Security Considerations
 
