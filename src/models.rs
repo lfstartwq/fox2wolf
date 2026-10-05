@@ -7,6 +7,45 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Row, ToSql};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str;
+
+/// Helper to read TEXT columns with lossy UTF-8 conversion
+/// Firefox's places.sqlite may contain invalid UTF-8 in text fields
+/// Handles both TEXT (String) and BLOB (Vec<u8>) column types
+fn get_text_lossy(row: &Row, idx: usize) -> rusqlite::Result<Option<String>> {
+    // Use get_ref to access raw value and handle invalid UTF-8
+    let val = row.get_ref(idx)?;
+    match val {
+        rusqlite::types::ValueRef::Null => Ok(None),
+        rusqlite::types::ValueRef::Text(bytes) => {
+            Ok(Some(String::from_utf8_lossy(bytes).into_owned()))
+        }
+        rusqlite::types::ValueRef::Blob(bytes) => {
+            Ok(Some(String::from_utf8_lossy(bytes).into_owned()))
+        }
+        _ => {
+            // For other types (Integer, Real), convert to string
+            Ok(Some(val.as_str()?.to_string()))
+        }
+    }
+}
+
+fn get_text_lossy_required(row: &Row, idx: usize) -> rusqlite::Result<String> {
+    let val = row.get_ref(idx)?;
+    match val {
+        rusqlite::types::ValueRef::Null => Ok(String::new()),
+        rusqlite::types::ValueRef::Text(bytes) => {
+            Ok(String::from_utf8_lossy(bytes).into_owned())
+        }
+        rusqlite::types::ValueRef::Blob(bytes) => {
+            Ok(String::from_utf8_lossy(bytes).into_owned())
+        }
+        _ => {
+            // For other types (Integer, Real), convert to string
+            Ok(val.as_str()?.to_string())
+        }
+    }
+}
 
 /// Firefox/LibreWolf stores timestamps as UTC microseconds (PRTime)
 pub type Microseconds = i64;
@@ -79,8 +118,8 @@ impl Origin {
     pub fn from_row(row: &Row) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
-            prefix: row.get(1)?,
-            host: row.get(2)?,
+            prefix: get_text_lossy_required(row, 1)?,
+            host: get_text_lossy_required(row, 2)?,
             frecency: row.get(3)?,
             recalc_frecency: row.get(4)?,
             alt_frecency: row.get(5)?,
@@ -137,20 +176,20 @@ impl Place {
     pub fn from_row(row: &Row) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
-            url: row.get(1)?,
-            title: row.get(2)?,
-            rev_host: row.get(3)?,
+            url: get_text_lossy_required(row, 1)?,
+            title: get_text_lossy(row, 2)?,
+            rev_host: get_text_lossy_required(row, 3)?,
             visit_count: row.get(4)?,
             hidden: row.get(5)?,
             typed: row.get(6)?,
             frecency: row.get(7)?,
             last_visit_date: row.get(8)?,
-            guid: row.get(9)?,
+            guid: get_text_lossy_required(row, 9)?,
             foreign_count: row.get(10)?,
             url_hash: row.get(11)?,
-            description: row.get(12)?,
-            preview_image_url: row.get(13)?,
-            site_name: row.get(14)?,
+            description: get_text_lossy(row, 12)?,
+            preview_image_url: get_text_lossy(row, 13)?,
+            site_name: get_text_lossy(row, 14)?,
             origin_id: row.get(15)?,
             recalc_frecency: row.get(16)?,
             alt_frecency: row.get(17)?,
