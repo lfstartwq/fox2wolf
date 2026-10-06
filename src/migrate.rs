@@ -18,10 +18,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Maximum rows per transaction (for future batched commit support)
-#[allow(dead_code)]
-const MAX_TX_ROWS: usize = 100_000;
-
 /// Migration context
 pub struct MigrationContext {
     pub src_profile: Profile,

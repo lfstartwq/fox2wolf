@@ -360,11 +360,3 @@ pub fn find_profile(browser: Browser, query: &str) -> Result<Profile> {
         })
     }
 }
-
-/// List all profiles (for --list-profiles)
-pub fn list_all_profiles() -> Result<Vec<Profile>> {
-    let mut all = Vec::new();
-    all.extend(discover_profiles(Browser::Firefox)?);
-    all.extend(discover_profiles(Browser::LibreWolf)?);
-    Ok(all)
-}

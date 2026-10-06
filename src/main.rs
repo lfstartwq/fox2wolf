@@ -138,11 +138,3 @@ fn list_profiles_cmd() -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_resolve_profile_default() {
-        // Requires actual environment, skipped in unit tests
-    }
-}

@@ -46,12 +46,12 @@ fn get_text_lossy_required(row: &Row, idx: usize) -> rusqlite::Result<String> {
 /// Firefox/LibreWolf stores timestamps as UTC microseconds (PRTime)
 pub type Microseconds = i64;
 
-/// Convert microseconds timestamp to DateTime<Utc>
+/// Convert microseconds timestamp to `DateTime<Utc>`
 pub fn microseconds_to_datetime(us: Microseconds) -> DateTime<Utc> {
     DateTime::from_timestamp_micros(us).unwrap_or_else(Utc::now)
 }
 
-/// Convert DateTime<Utc> to microseconds
+/// Convert `DateTime<Utc>` to microseconds
 pub fn datetime_to_microseconds(dt: DateTime<Utc>) -> Microseconds {
     dt.timestamp_micros()
 }

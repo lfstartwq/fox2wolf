@@ -4,10 +4,8 @@
 //! Database connection, Schema constants, transaction management
 
 use crate::error::Result;
-use parking_lot::Mutex;
 use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
 use std::path::Path;
-use std::sync::Arc;
 
 /// Flags for opening source database read-only
 pub const SRC_OPEN_FLAGS: OpenFlags = OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -18,31 +16,6 @@ pub const SRC_OPEN_FLAGS: OpenFlags = OpenFlags::SQLITE_OPEN_READ_ONLY
 pub const DST_OPEN_FLAGS: OpenFlags = OpenFlags::SQLITE_OPEN_READ_WRITE
     .union(OpenFlags::SQLITE_OPEN_CREATE)
     .union(OpenFlags::SQLITE_OPEN_FULL_MUTEX);
-
-/// Safe PRAGMA settings (after migration completes)
-pub const PRAGMA_SAFE: &str = r#"
-    PRAGMA synchronous = NORMAL;
-    PRAGMA journal_mode = WAL;
-"#;
-
-/// Table name constants
-pub mod tables {
-    pub const MOZ_ORIGINS: &str = "moz_origins";
-    pub const MOZ_PLACES: &str = "moz_places";
-    pub const MOZ_PLACES_EXTRA: &str = "moz_places_extra";
-    pub const MOZ_HISTORYVISITS: &str = "moz_historyvisits";
-    pub const MOZ_HISTORYVISITS_EXTRA: &str = "moz_historyvisits_extra";
-    pub const MOZ_BOOKMARKS: &str = "moz_bookmarks";
-    pub const MOZ_BOOKMARKS_DELETED: &str = "moz_bookmarks_deleted";
-    pub const MOZ_KEYWORDS: &str = "moz_keywords";
-    pub const MOZ_ANNO_ATTRIBUTES: &str = "moz_anno_attributes";
-    pub const MOZ_ANNOS: &str = "moz_annos";
-    pub const MOZ_ITEMS_ANNOS: &str = "moz_items_annos";
-    pub const MOZ_META: &str = "moz_meta";
-    pub const MOZ_PLACES_METADATA: &str = "moz_places_metadata";
-    pub const MOZ_PLACES_METADATA_SEARCH_QUERIES: &str = "moz_places_metadata_search_queries";
-    pub const MOZ_INPUTHISTORY: &str = "moz_inputhistory";
-}
 
 /// SQL for creating tables (core history tables only)
 pub const CREATE_TABLES_SQL: &str = r#"
@@ -245,81 +218,10 @@ impl<'a> Drop for AutoRollback<'a> {
     }
 }
 
-/// Batch insert helper
-pub struct BatchInserter<'a> {
-    tx: &'a mut Transaction<'a>,
-    sql: String,
-    batch_size: usize,
-    pending: usize,
-}
-
-impl<'a> BatchInserter<'a> {
-    pub fn new(tx: &'a mut Transaction<'a>, sql: String, batch_size: usize) -> Self {
-        Self {
-            tx,
-            sql,
-            batch_size,
-            pending: 0,
-        }
-    }
-
-    pub fn push<P: rusqlite::Params>(&mut self, params: P) -> Result<()> {
-        self.tx.execute(&self.sql, params)?;
-        self.pending += 1;
-        if self.pending >= self.batch_size {
-            self.flush()?;
-        }
-        Ok(())
-    }
-
-    pub fn flush(&mut self) -> Result<()> {
-        if self.pending > 0 {
-            self.pending = 0;
-        }
-        Ok(())
-    }
-}
-
 /// Get database table counts
 pub fn get_table_counts(conn: &Connection) -> Result<(usize, usize, usize)> {
     let origins: i64 = conn.query_row("SELECT COUNT(*) FROM moz_origins", [], |r| r.get(0))?;
     let places: i64 = conn.query_row("SELECT COUNT(*) FROM moz_places", [], |r| r.get(0))?;
     let visits: i64 = conn.query_row("SELECT COUNT(*) FROM moz_historyvisits", [], |r| r.get(0))?;
     Ok((origins as usize, places as usize, visits as usize))
-}
-
-/// Check schema version compatibility
-pub fn check_schema_version(conn: &Connection) -> Result<i32> {
-    let version: i32 = conn
-        .query_row(
-            "SELECT value FROM moz_meta WHERE key = 'schema_version'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    Ok(version)
-}
-
-/// Thread-safe database connection pool (simple version)
-pub type SharedConnection = Arc<Mutex<Connection>>;
-
-pub fn new_shared_connection(path: &Path, read_only: bool) -> Result<SharedConnection> {
-    let flags = if read_only {
-        SRC_OPEN_FLAGS
-    } else {
-        DST_OPEN_FLAGS
-    };
-    let conn = Connection::open_with_flags(path, flags)?;
-    if !read_only {
-        conn.execute("PRAGMA foreign_keys = ON", [])?;
-        conn.execute_batch(
-            "PRAGMA synchronous = OFF;
-             PRAGMA temp_store = MEMORY;
-             PRAGMA cache_size = -32768;
-             PRAGMA page_size = 4096;",
-        )?;
-        let _: Option<String> = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
-        let _: Option<i64> = conn.query_row("PRAGMA mmap_size = 268435456", [], |r| r.get(0))?;
-    }
-    Ok(Arc::new(Mutex::new(conn)))
 }

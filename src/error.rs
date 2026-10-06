@@ -29,9 +29,6 @@ pub enum Error {
     #[error("Invalid profile directory: {path} (missing places.sqlite)")]
     InvalidProfileDir { path: PathBuf },
 
-    #[error("Database locked (browser may be running): {path}")]
-    DatabaseLocked { path: PathBuf },
-
     #[error("Backup confirmation failed: user cancelled")]
     BackupNotConfirmed,
 
@@ -41,17 +38,8 @@ pub enum Error {
     #[error("Migration validation failed: {detail}")]
     ValidationFailed { detail: String },
 
-    #[error("Schema version mismatch: expected {expected}, actual {actual}")]
-    SchemaMismatch { expected: i32, actual: i32 },
-
     #[error("Config parse error: {0}")]
     ConfigParse(#[from] toml::de::Error),
-
-    #[error("UTF-8 conversion error: {0}")]
-    Utf8(#[from] std::string::FromUtf8Error),
-
-    #[error("Path strip error: {0}")]
-    PathStrip(#[from] std::path::StripPrefixError),
 
     #[error("JSON serialization error: {0}")]
     Json(#[from] serde_json::Error),
@@ -61,10 +49,3 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
-
-impl Error {
-    pub fn is_db_locked(&self) -> bool {
-        matches!(self, Error::DatabaseLocked { .. })
-            || matches!(self, Error::Sqlite(e) if e.to_string().contains("database is locked"))
-    }
-}
