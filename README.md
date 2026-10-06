@@ -2,14 +2,14 @@
 
 > Firefox → LibreWolf history migration tool
 
-Migrate Firefox's `places.sqlite` history (visits, URLs, timestamps, frecency, etc.) to LibreWolf with **merge deduplication**, **batch processing for large datasets**, and **progress display**.
+Migrate Firefox's `places.sqlite` history (visits, URLs, timestamps, frecency, etc.) to LibreWolf with **merge deduplication**, **single-transaction processing for large datasets**, and **progress display**.
 
 **Language**: [English](README.md) | [简体中文](README.zh-CN.md)
 
 ## Features
 
 - **Merge deduplication**: Same URL automatically merges `visit_count`, preserves earliest first visit and latest visit time
-- **Large dataset optimization**: >500k records with batched transactions, disabled `synchronous`, WAL mode, progress bar
+- **Large dataset optimization**: >500k records within a single transaction, disabled `synchronous`, WAL mode, progress bar
 - **Auto Profile detection**: Reads `profiles.ini` to locate default Profile, supports manual override
 - **Safety first**: Mandatory confirmation before migration, source DB read-only, destination DB transaction-protected, dry-run mode
 - **UTC timestamp preservation**: Firefox PRTime (microseconds) migrated as-is, no timezone conversion
@@ -29,10 +29,8 @@ Migrate Firefox's `places.sqlite` history (visits, URLs, timestamps, frecency, e
 | `tracing` + `tracing-subscriber` | 0.1 / 0.3 | Structured logging |
 | `toml` | 0.8 | profiles.ini parsing |
 | `walkdir` | 2.5 | Directory scanning for fallback Profile discovery |
-| `parking_lot` | 0.12 | Fast mutex for connection pooling |
 | `serde` + `serde_json` | 1.0 | Serialization for stats/metadata |
-| `anyhow` / `thiserror` | 1.0 | Error handling |
-| `scopeguard` | 1.1 | Defer cleanup patterns |
+| `thiserror` | 1.0 | Error handling |
 
 ## Installation
 
@@ -168,8 +166,7 @@ fox2wolf/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── README.md
-├── README.zh-CN.md
-└── CHANGELOG.md
+└── README.zh-CN.md
 ```
 
 ## LICENSE

@@ -34,40 +34,25 @@ cargo doc --open
 |------|----------------|---------------------|
 | `src/main.rs` | CLI entry, argument parsing, logging setup | `Args`, `main()`, `init_logging()`, `resolve_profile()`, `list_profiles_cmd()` |
 | `src/lib.rs` | Public API re-exports | `pub use` for all modules |
-| `src/error.rs` | Error enum, `Result` alias | `Error`, `Result`, `is_db_locked()` |
+| `src/error.rs` | Error enum, `Result` alias | `Error`, `Result` |
 | `src/models.rs` | Data structures, serialization, UTF-8 handling | `Origin`, `Place`, `Visit`, `VisitType`, `MigrationStats`, `Microseconds`, `get_text_lossy()`, `get_text_lossy_required()` |
-| `src/profile.rs` | Profile discovery & validation | `Browser`, `Profile`, `discover_profiles()`, `get_default_profile()`, `find_profile()`, `check_db_locked()` |
-| `src/db.rs` | SQLite connections, schema, transactions | `open_source_db()`, `open_dest_db()`, `ensure_schema()`, `AutoRollback`, `PRAGMA_SAFE`, `get_table_counts()` |
+| `src/profile.rs` | Profile discovery & validation | `Browser`, `Profile`, `discover_profiles()`, `get_default_profile()`, `find_profile()` |
+| `src/db.rs` | SQLite connections, schema, transactions | `open_source_db()`, `open_dest_db()`, `ensure_schema()`, `AutoRollback`, `get_table_counts()` |
 | `src/dedup.rs` | Merge/deduplication algorithms | `OriginMap`, `PlaceMap`, `VisitDedupSet`, `upsert_origin()`, `upsert_place()`, `upsert_visit()`, `recalc_frecency()`, `update_meta()` |
 | `src/migrate.rs` | Migration orchestration | `MigrationContext`, `migrate()`, `migrate_origins()`, `migrate_places()` (returns `HashMap<old_place_id, new_place_id>`), `migrate_visits()` (accepts `place_id_map`), `validate_migration()` |
-| `tests/integration_test.rs` | End-to-end tests | `test_full_migration()`, `test_merge_deduplication()`, `test_discover_profiles()` |
+| `tests/integration_test.rs` | End-to-end tests | `test_full_migration()`, `test_merge_deduplication()`, `test_discover_profiles()`, `test_migration_stats_display()` |
 
 ## Timing Constants
 
 | Constant | Location | Value | Purpose |
 |----------|----------|-------|---------|
-| `BATCH_SIZE` | (removed) | 5000 | Would batch inserts; currently single-row per execute |
-| `MAX_TX_ROWS` | `migrate.rs:19` | 100_000 | Max rows per transaction before committing (defined, unused; batched commits deferred) |
 | Progress bar | `migrate.rs` | `total_items = origins + places + visits` | Updates per row |
 
-> Note: The `BATCH_SIZE` constant was removed during cleanup. `MAX_TX_ROWS` is defined in `migrate.rs` but currently unused; current implementation streams row-by-row within a single transaction. Batched commits are deferred to a future release. For >1M rows, consider re-adding batched commits.
+> Note: The `BATCH_SIZE` and `MAX_TX_ROWS` constants were removed during cleanup. The current implementation streams row-by-row within a single transaction. For >1M rows, consider re-adding batched commits.
 
 ## Testing Conventions
 
-- **Unit tests**: In `#[cfg(test)]` modules alongside code (`dedup.rs`, `migrate.rs`, `main.rs`)
-- **Integration tests**: `tests/integration_test.rs` — uses `tempdir`, creates real SQLite files, exercises full pipeline
-- **Test isolation**: Each test creates fresh temp directories; no shared state
-- **Dry-run tests**: Verify read counts without writes
-- **Merge tests**: Pre-populate destination, verify `visit_count` summation and `last_visit_date` max logic
-
-Run integration tests with:
-```bash
-cargo test --test integration_test -- --nocapture
-```
-
-## Testing Conventions
-
-- **Unit tests**: In `#[cfg(test)]` modules alongside code (`dedup.rs`, `migrate.rs`, `main.rs`)
+- **Unit tests**: In `#[cfg(test)]` modules alongside code (`dedup.rs`, `migrate.rs`)
 - **Integration tests**: `tests/integration_test.rs` — uses `tempdir`, creates real SQLite files, exercises full pipeline
 - **Test isolation**: Each test creates fresh temp directories; no shared state
 - **Dry-run tests**: Verify read counts without writes
@@ -184,11 +169,9 @@ diff ff_schema.sql lw_schema.sql
 ## Release Checklist
 
 - [ ] Update version in `Cargo.toml`
-- [ ] Update `CHANGELOG.md` (if exists)
 - [ ] `cargo test --all-targets`
 - [ ] `cargo clippy -- -D warnings`
 - [ ] `cargo fmt --check`
 - [ ] `cargo build --release`
 - [ ] Test binary on target platforms (Windows, Linux, macOS)
-- [ ] `cargo publish --dry-run`
-- [ ] `cargo publish`
+- [ ] Publish release manually: `gh release create vX.Y.Z <binaries>` (or via web UI); no release workflow is committed in this repo

@@ -2,14 +2,14 @@
 
 > Firefox → LibreWolf 历史记录迁移工具
 
-将 Firefox 的 `places.sqlite` 历史记录（访问记录、URL、时间戳、frecency 等）迁移到 LibreWolf，支持**合并去重**、**大数据量分批处理**、**进度显示**。
+将 Firefox 的 `places.sqlite` 历史记录（访问记录、URL、时间戳、frecency 等）迁移到 LibreWolf，支持**合并去重**、**大数据量单事务处理**、**进度显示**。
 
 **语言**: [English](README.md) | [简体中文](README.zh-CN.md)
 
 ## 特性
 
 - **合并去重**：同 URL 自动合并 `visit_count`，保留最早首次访问和最晚访问时间
-- **大数据量优化**：>50 万条记录支持分批事务、关闭 `synchronous`、WAL 模式、进度条
+- **大数据量优化**：>50 万条记录在单个事务内完成、关闭 `synchronous`、WAL 模式、进度条
 - **自动 Profile 检测**：读取 `profiles.ini` 定位默认 Profile，支持手动指定
 - **安全第一**：迁移前强制确认、源库只读打开、目标库事务保护、干运行模式
 - **UTC 时间戳保持**：Firefox PRTime (微秒) 原样迁移，不做时区转换
@@ -29,10 +29,8 @@
 | `tracing` + `tracing-subscriber` | 0.1 / 0.3 | 结构化日志 |
 | `toml` | 0.8 | profiles.ini 解析 |
 | `walkdir` | 2.5 | 目录扫描（备选 Profile 发现） |
-| `parking_lot` | 0.12 | 快速互斥锁（连接池） |
 | `serde` + `serde_json` | 1.0 | 统计/元数据序列化 |
-| `anyhow` / `thiserror` | 1.0 | 错误处理 |
-| `scopeguard` | 1.1 | 延迟清理模式 |
+| `thiserror` | 1.0 | 错误处理 |
 
 ## 安装
 
@@ -168,8 +166,7 @@ fox2wolf/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── README.md
-├── README.zh-CN.md
-└── CHANGELOG.md
+└── README.zh-CN.md
 ```
 
 ## 许可证
