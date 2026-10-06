@@ -14,7 +14,6 @@ rusqlite = { version = "0.31", features = ["bundled", "modern_sqlite", "extra_ch
 directories-next = "2.0"
 clap = { version = "4.5", features = ["derive", "help", "env"] }
 uuid = { version = "1.8", features = ["v4", "serde"] }
-anyhow = "1.0"
 thiserror = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
