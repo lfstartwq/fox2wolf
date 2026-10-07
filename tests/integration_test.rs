@@ -109,10 +109,10 @@ fn test_full_migration() {
 
     // Verify destination database
     let conn = open_dest_db(&dst_db).unwrap();
-    let (origins, places, visits) = get_table_counts(&conn).unwrap();
-    assert_eq!(origins, 2);
-    assert_eq!(places, 2);
-    assert_eq!(visits, 3);
+    let counts = get_table_counts(&conn).unwrap();
+    assert_eq!(counts.origins, 2);
+    assert_eq!(counts.places, 2);
+    assert_eq!(counts.visits, 3);
 }
 
 #[test]

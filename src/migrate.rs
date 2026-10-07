@@ -2,18 +2,19 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! Core migration logic
+//!
+//! This module orchestrates the migration from Firefox to LibreWolf history.
+//! The deep seam is [`migrate_with_spec`] which accepts a [`MigrationSpec`] and
+//! delegates to [`migrate_with_context`] — all SQLite-specific details are hidden
+//! behind [`DbContext`] and [`DedupContext`].
 
-use crate::db::{ensure_schema, get_table_counts, open_dest_db, open_source_db};
-use crate::dedup::{
-    build_origin_map, build_place_map, build_visit_dedup_set, recalc_frecency, update_meta,
-    upsert_origin, upsert_place, upsert_visit,
-};
+use crate::db::{self, DbContext};
+use crate::dedup::{recalc_frecency, update_meta, DedupContext};
 use crate::error::{Error, Result};
 use crate::models::{MigrationStats, Origin, Place, Visit};
 use crate::profile::Profile;
 use indicatif::{ProgressBar, ProgressStyle};
-use rusqlite::{Connection, Transaction};
-use std::collections::HashMap;
+use rusqlite::Connection;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -95,7 +96,13 @@ pub fn migrate_with_spec(spec: &MigrationSpec) -> Result<MigrationStats> {
     migrate_with_context(&ctx)
 }
 
+/// Execute migration using a migration context (thin adapter over the spec seam).
+pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
+    migrate_with_context(ctx)
+}
+
 /// Execute migration using a migration context
+/// The context hides all orchestration state behind the db/dedup seams.
 fn migrate_with_context(ctx: &MigrationContext) -> Result<MigrationStats> {
     // 1. Check source and destination are not the same
     if ctx.src_profile.path == ctx.dst_profile.path {
@@ -108,16 +115,22 @@ fn migrate_with_context(ctx: &MigrationContext) -> Result<MigrationStats> {
     ctx.src_profile.validate()?;
     ctx.dst_profile.validate()?;
 
-    // 3. Open databases
-    let src_conn = open_source_db(&ctx.src_profile.places_sqlite())?;
-    let mut dst_conn = open_dest_db(&ctx.dst_profile.places_sqlite())?;
+    // 3. Open databases behind the DbContext seam (source stays open for the
+    // counts and the three migration scans; validation below reads only the
+    // destination).
+    let mut db = DbContext::open_dest_db(&ctx.dst_profile.places_sqlite())?;
+    let src_db = DbContext::open_source_db(&ctx.src_profile.places_sqlite())?;
 
-    // 4. Ensure destination schema
-    ensure_schema(&dst_conn)?;
+    // 4. Ensure destination schema exists (idempotent)
+    db.ensure_schema()?;
 
-    // 5. Display statistics
-    let (src_origins, src_places, src_visits) = get_table_counts(&src_conn)?;
-    let (dst_origins, dst_places, dst_visits) = get_table_counts(&dst_conn)?;
+    // 5. Compute statistics
+    let src_counts = src_db.table_counts()?;
+    let (src_origins, src_places, src_visits) =
+        (src_counts.origins, src_counts.places, src_counts.visits);
+    let dst_counts = db.table_counts()?;
+    let (dst_origins, dst_places, dst_visits) =
+        (dst_counts.origins, dst_counts.places, dst_counts.visits);
 
     println!(
         "Source ({}): origins={}, places={}, visits={}",
@@ -150,211 +163,175 @@ fn migrate_with_context(ctx: &MigrationContext) -> Result<MigrationStats> {
         }
     }
 
-    // 7. Execute migration
-    let start = Instant::now();
-    let mut stats = MigrationStats::default();
-
-    // Progress bar
-    let total_items = src_origins + src_places + src_visits;
-    let pb = ProgressBar::new(total_items as u64);
+    // 7. Progress bar over all rows to migrate
+    let pb = ProgressBar::new((src_origins + src_places + src_visits) as u64);
     pb.set_style(ProgressStyle::default_bar()
         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}) {msg}")
         .unwrap()
         .progress_chars("█▉▊▋▌▍▎▏  "));
 
-    // --- Migrate all data within a single transaction ---
-    {
-        let mut tx = dst_conn.transaction()?;
+    // 8. Run migration inside a single transaction behind the DbContext seam;
+    // stats are accumulated inside the unit of work. `with_txn` commits it,
+    // `with_dry_run_txn` exercises the same code and rolls it back.
+    let start_time = Instant::now();
+    let unit_of_work = |dst_tx: &mut rusqlite::Transaction| -> Result<MigrationStats> {
+        let mut stats = MigrationStats::default();
 
-        // --- Migrate Origins ---
-        pb.set_message("Migrating Origins...");
-        stats.origins_read = migrate_origins(&src_conn, &mut tx, &mut stats, &pb, ctx)?;
+        // 8a. Build dedup behavior object seeded from destination DB via DedupContext
+        let mut dedup = DedupContext::load_from(&mut *dst_tx)?;
 
+        // 8b. Origins phase
+        migrate_origins_phase(src_db.as_conn(), &mut dedup, &mut stats, ctx, &pb)?;
         if ctx.is_cancelled() {
             return Err(Error::Other("User cancelled".into()));
         }
 
-        // --- Migrate Places ---
-        pb.set_message("Migrating Places...");
-        let place_id_map = migrate_places(&src_conn, &mut tx, &mut stats, &pb, ctx)?;
-        stats.places_read = place_id_map.len();
-
+        // 8c. Places phase
+        migrate_places_phase(src_db.as_conn(), &mut dedup, &mut stats, ctx, &pb)?;
         if ctx.is_cancelled() {
             return Err(Error::Other("User cancelled".into()));
         }
 
-        // --- Migrate Visits ---
-        pb.set_message("Migrating Visits...");
-        stats.visits_read =
-            migrate_visits(&src_conn, &mut tx, &mut stats, &pb, ctx, &place_id_map)?;
+        // 8d. Visits phase
+        migrate_visits_phase(src_db.as_conn(), &mut dedup, &mut stats, ctx, &pb)?;
 
-        // Commit transaction
-        if !ctx.dry_run {
-            pb.set_message("Committing transaction...");
-            tx.commit()?;
-        }
-    } // Transaction dropped here, dst_conn available again
+        // 8e. Release the dedup context's borrow of the transaction before the
+        // frecency/meta updates below (DbContext::with_txn owns commit/rollback).
+        drop(dedup);
 
-    // 9. Recalculate frecency (outside transaction)
+        // 8f. Recalculate frecency and update meta
+        pb.set_message("Finalizing transaction...");
+        recalc_frecency(dst_tx)?;
+        update_meta(dst_tx, &stats)?;
+
+        Ok(stats)
+    };
+    let mut stats = if ctx.dry_run {
+        db.with_dry_run_txn(unit_of_work)?
+    } else {
+        db.with_txn(unit_of_work)?
+    };
+
+    // 9. Restore safe PRAGMAs after a real migration (a dry-run never wrote
+    // anything, so it has nothing to restore)
     if !ctx.dry_run {
-        pb.set_message("Recalculating frecency...");
-        recalc_frecency(&dst_conn)?;
-        // Restore safe PRAGMA
-        dst_conn.execute("PRAGMA synchronous = NORMAL", [])?;
-        let _: Option<String> =
-            dst_conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+        db.restore_pragmas()?;
     }
 
-    // 10. Update metadata
-    if !ctx.dry_run {
-        update_meta(&dst_conn, &stats)?;
-    }
-
-    stats.duration_ms = start.elapsed().as_millis() as u64;
+    stats.duration_ms = start_time.elapsed().as_millis() as u64;
     pb.finish_with_message("Done");
 
-    // 11. Validate
+    // 10. Post-migration validation (destination only; skipped in dry-run)
     if !ctx.dry_run {
-        validate_migration(&src_conn, &dst_conn, &stats)?;
+        validate_migration(db.as_conn(), &stats)?;
     }
 
     Ok(stats)
 }
 
-/// Execute migration (thin adapter over the seam for backward compatibility)
-pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
-    migrate_with_context(ctx)
-}
-
-/// Migrate Origins
-fn migrate_origins(
-    src: &Connection,
-    tx: &mut Transaction,
+/// Phase 1: stream source origins into the destination via `DedupContext`.
+///
+/// Reads in `ORDER BY id` so insertion order (and therefore first-wins dedup)
+/// is deterministic. Cancellation stops the scan mid-stream; the caller decides
+/// whether a partially-read phase is an error.
+fn migrate_origins_phase(
+    src_conn: &Connection,
+    dedup: &mut DedupContext,
     stats: &mut MigrationStats,
-    pb: &ProgressBar,
     ctx: &MigrationContext,
-) -> Result<usize> {
-    let mut origin_map = build_origin_map(tx)?;
-    let mut stmt = src.prepare("SELECT * FROM moz_origins")?;
-    let mut rows = stmt.query([])?;
-    let mut count = 0;
+    pb: &ProgressBar,
+) -> Result<()> {
+    pb.set_message("Migrating Origins...");
+    let mut origin_stmt = src_conn.prepare(
+        "SELECT id, prefix, host, frecency, recalc_frecency, alt_frecency, recalc_alt_frecency, block_until_ms, block_pages_until_ms FROM moz_origins ORDER BY id",
+    )?;
+    let mut origins = origin_stmt.query_map([], Origin::from_row)?;
 
-    while let Some(row) = rows.next()? {
+    while let Some(origin) = origins.next().transpose()? {
         if ctx.is_cancelled() {
             break;
         }
-
-        let origin = Origin::from_row(row)?;
-        let key = origin.unique_key();
-        let was_present = origin_map.contains_key(&key);
-        let _new_id = upsert_origin(tx, &origin, &mut origin_map)?;
-
-        if was_present {
-            stats.origins_merged += 1;
-        } else {
+        stats.origins_read += 1;
+        let (_new_id, inserted) = dedup.upsert_origin(&origin)?;
+        if inserted {
             stats.origins_inserted += 1;
+        } else {
+            stats.origins_merged += 1;
         }
-        count += 1;
         pb.inc(1);
     }
-
-    Ok(count)
+    Ok(())
 }
 
-/// Migrate Places
-fn migrate_places(
-    src: &Connection,
-    tx: &mut Transaction,
+/// Phase 2: stream source places into the destination via `DedupContext`.
+///
+/// `place.origin_id` is the source origin id; `upsert_origin` recorded the
+/// translation during the origins phase.
+fn migrate_places_phase(
+    src_conn: &Connection,
+    dedup: &mut DedupContext,
     stats: &mut MigrationStats,
-    pb: &ProgressBar,
     ctx: &MigrationContext,
-) -> Result<HashMap<i64, i64>> {
-    let mut place_map = build_place_map(tx)?;
-    let mut origin_map = build_origin_map(tx)?;
-    let mut stmt = src.prepare("SELECT * FROM moz_places ORDER BY id")?;
-    let mut rows = stmt.query([])?;
-    let mut place_id_map = HashMap::new();
+    pb: &ProgressBar,
+) -> Result<()> {
+    pb.set_message("Migrating Places...");
+    let mut place_stmt = src_conn.prepare(
+        "SELECT id, url, title, rev_host, visit_count, hidden, typed, frecency, last_visit_date, guid, foreign_count, url_hash, description, preview_image_url, site_name, origin_id, recalc_frecency, alt_frecency, recalc_alt_frecency FROM moz_places ORDER BY id",
+    )?;
+    let mut places = place_stmt.query_map([], Place::from_row)?;
 
-    while let Some(row) = rows.next()? {
+    while let Some(place) = places.next().transpose()? {
         if ctx.is_cancelled() {
             break;
         }
-
-        let place = Place::from_row(row)?;
-        let old_place_id = place.id;
-
-        // Ensure origin exists first
-        let new_origin_id = if let Some(orig_id) = place.origin_id {
-            let mut origin_stmt = src.prepare("SELECT * FROM moz_origins WHERE id = ?")?;
-            if let Ok(orig_row) = origin_stmt.query_row([orig_id], Origin::from_row) {
-                Some(upsert_origin(tx, &orig_row, &mut origin_map)?)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let (new_place_id, merged) = upsert_place(tx, &place, &mut place_map, new_origin_id)?;
-        place_id_map.insert(old_place_id, new_place_id);
-
-        if merged {
+        stats.places_read += 1;
+        let (_new_id, is_merged) = dedup.upsert_place(&place)?;
+        if is_merged {
             stats.places_merged += 1;
         } else {
             stats.places_inserted += 1;
         }
         pb.inc(1);
     }
-
-    Ok(place_id_map)
+    Ok(())
 }
 
-/// Migrate Visits
-fn migrate_visits(
-    src: &Connection,
-    tx: &mut Transaction,
+/// Phase 3: stream source visits into the destination via `DedupContext`,
+/// which rewrites `place_id` to the destination id before dedup.
+fn migrate_visits_phase(
+    src_conn: &Connection,
+    dedup: &mut DedupContext,
     stats: &mut MigrationStats,
-    pb: &ProgressBar,
     ctx: &MigrationContext,
-    place_id_map: &HashMap<i64, i64>,
-) -> Result<usize> {
-    let mut visit_dedup = build_visit_dedup_set(tx)?;
-    let mut stmt = src.prepare("SELECT * FROM moz_historyvisits ORDER BY id")?;
-    let mut rows = stmt.query([])?;
-    let mut count = 0;
+    pb: &ProgressBar,
+) -> Result<()> {
+    pb.set_message("Migrating Visits...");
+    let mut visit_stmt = src_conn.prepare(
+        "SELECT id, from_visit, place_id, visit_date, visit_type, session, source, triggeringPlaceId FROM moz_historyvisits ORDER BY id",
+    )?;
+    let mut visits = visit_stmt.query_map([], Visit::from_row)?;
 
-    while let Some(row) = rows.next()? {
+    while let Some(visit) = visits.next().transpose()? {
         if ctx.is_cancelled() {
             break;
         }
-
-        let visit = Visit::from_row(row)?;
-        // Rewrite place_id using the mapping from migrate_places
-        let new_place_id = place_id_map
-            .get(&visit.place_id)
-            .copied()
-            .unwrap_or(visit.place_id);
-        let mut new_visit = visit.clone();
-        new_visit.place_id = new_place_id;
-        let inserted = upsert_visit(tx, &new_visit, &mut visit_dedup, &HashMap::new())?;
-
+        stats.visits_read += 1;
+        let inserted = dedup.upsert_visit(&visit)?;
         if inserted {
             stats.visits_inserted += 1;
         } else {
             stats.visits_skipped += 1;
         }
-        count += 1;
         pb.inc(1);
     }
-
-    Ok(count)
+    Ok(())
 }
 
-/// Post-migration validation
-fn validate_migration(_src: &Connection, dst: &Connection, stats: &MigrationStats) -> Result<()> {
-    let (_, dst_places, dst_visits) = get_table_counts(dst)?;
+/// Post-migration validation: basic sanity plus foreign-key integrity.
+fn validate_migration(dst: &Connection, stats: &MigrationStats) -> Result<()> {
+    let dst_counts = db::get_table_counts(dst)?;
+    let (dst_places, dst_visits) = (dst_counts.places, dst_counts.visits);
 
-    // Basic integrity check
     if stats.places_inserted + stats.places_merged == 0 && stats.visits_inserted == 0 {
         return Err(Error::ValidationFailed {
             detail: "No data migrated".into(),
@@ -383,109 +360,217 @@ fn validate_migration(_src: &Connection, dst: &Connection, stats: &MigrationStat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::open_dest_db;
-    use crate::profile::Profile;
-    use std::path::Path;
-    use tempfile::tempdir;
+    use crate::db::{open_dest_db, CREATE_TABLES_SQL};
+    use crate::profile::Browser;
+    use std::path::{Path, PathBuf};
 
-    fn create_test_profile(dir: &Path, name: &str) -> Profile {
+    fn create_test_db(dir: &Path) -> PathBuf {
+        let db_path = dir.join("places.sqlite");
+        let conn = open_dest_db(&db_path).unwrap();
+        conn.execute_batch(CREATE_TABLES_SQL).unwrap();
+        db_path
+    }
+
+    fn insert_test_data(db_path: &Path) {
+        let conn = open_dest_db(db_path).unwrap();
+        conn.execute(
+            "INSERT INTO moz_origins (prefix, host, frecency) VALUES ('https://', 'example.com', 100)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO moz_origins (prefix, host, frecency) VALUES ('https://', 'test.com', 200)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO moz_places (url, title, rev_host, visit_count, guid, url_hash, origin_id)
+             VALUES ('https://example.com/', 'Example', 'moc.elpmaxe', 5, 'guid-1', 111, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO moz_places (url, title, rev_host, visit_count, guid, url_hash, origin_id)
+             VALUES ('https://test.com/page', 'Test Page', 'moc.tset', 3, 'guid-2', 222, 2)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO moz_historyvisits (place_id, visit_date, visit_type, session) VALUES (1, 1000000, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO moz_historyvisits (place_id, visit_date, visit_type, session) VALUES (1, 2000000, 2, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO moz_historyvisits (place_id, visit_date, visit_type, session) VALUES (2, 1500000, 1, 2)",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn create_test_profile(dir: &Path, name: &str, browser: Browser) -> Profile {
         Profile {
             name: name.into(),
             path: dir.to_path_buf(),
             is_default: true,
             is_relative: true,
-            browser: crate::profile::Browser::Firefox,
+            browser,
         }
     }
 
     #[test]
-    fn test_migration_dry_run() {
-        let tmp = tempdir().unwrap();
-        let src_dir = tmp.path().join("src");
-        let dst_dir = tmp.path().join("dst");
+    fn test_dry_run_then_real_migration() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("firefox_profile");
+        let dst_dir = tmp.path().join("librewolf_profile");
         std::fs::create_dir_all(&src_dir).unwrap();
         std::fs::create_dir_all(&dst_dir).unwrap();
 
-        // Create source database
-        let src_db = src_dir.join("places.sqlite");
-        let src_conn = open_dest_db(&src_db).unwrap();
-        // Execute CREATE TABLE separately to avoid execute_batch issues
-        src_conn
-            .execute_batch(
-                r#"
-            CREATE TABLE moz_origins (
-                id INTEGER PRIMARY KEY,
-                prefix TEXT NOT NULL,
-                host TEXT NOT NULL,
-                frecency INTEGER NOT NULL,
-                recalc_frecency INTEGER NOT NULL DEFAULT 0,
-                alt_frecency INTEGER,
-                recalc_alt_frecency INTEGER NOT NULL DEFAULT 0,
-                block_until_ms INTEGER,
-                block_pages_until_ms INTEGER,
-                UNIQUE (host, prefix)
-            );
-            CREATE TABLE moz_places (
-                id INTEGER PRIMARY KEY,
-                url LONGVARCHAR,
-                title LONGVARCHAR,
-                rev_host LONGVARCHAR,
-                visit_count INTEGER DEFAULT 0,
-                hidden INTEGER DEFAULT 0 NOT NULL,
-                typed INTEGER DEFAULT 0 NOT NULL,
-                frecency INTEGER DEFAULT -1 NOT NULL,
-                last_visit_date INTEGER,
-                guid TEXT,
-                foreign_count INTEGER DEFAULT 0 NOT NULL,
-                url_hash INTEGER DEFAULT 0 NOT NULL,
-                description TEXT,
-                preview_image_url TEXT,
-                site_name TEXT,
-                origin_id INTEGER REFERENCES moz_origins(id),
-                recalc_frecency INTEGER NOT NULL DEFAULT 0,
-                alt_frecency INTEGER,
-                recalc_alt_frecency INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE moz_historyvisits (
-                id INTEGER PRIMARY KEY,
-                from_visit INTEGER,
-                place_id INTEGER,
-                visit_date INTEGER,
-                visit_type INTEGER,
-                session INTEGER,
-                source INTEGER DEFAULT 0 NOT NULL,
-                triggeringPlaceId INTEGER
-            );
-        "#,
+        // Create source database and insert data
+        let src_db = create_test_db(&src_dir);
+        insert_test_data(&src_db);
+
+        // Create empty destination database
+        let _dst_db = create_test_db(&dst_dir);
+
+        let src_profile = create_test_profile(&src_dir, "firefox-test", Browser::Firefox);
+        let dst_profile = create_test_profile(&dst_dir, "librewolf-test", Browser::LibreWolf);
+
+        // Run migration (dry-run)
+        let ctx = MigrationContext::new(src_profile.clone(), dst_profile.clone(), true);
+        let stats = migrate_with_context(&ctx).unwrap();
+
+        assert_eq!(stats.origins_read, 2);
+        assert_eq!(stats.places_read, 2);
+        assert_eq!(stats.visits_read, 3);
+
+        // Actual migration (skip confirmation)
+        let mut ctx = MigrationContext::new(src_profile, dst_profile, false);
+        ctx.skip_confirmation = true;
+        let stats = migrate_with_context(&ctx).unwrap();
+
+        assert_eq!(stats.origins_read, 2);
+        assert_eq!(stats.places_read, 2);
+        assert_eq!(stats.visits_read, 3);
+        assert_eq!(stats.origins_inserted, 2);
+        assert_eq!(stats.places_inserted, 2);
+        assert_eq!(stats.visits_inserted, 3);
+
+        // Verify the destination actually holds the expected rows, and that
+        // visits point at destination place ids (not copied source ids).
+        let dst = open_dest_db(&_dst_db).unwrap();
+        let counts = crate::db::get_table_counts(&dst).unwrap();
+        assert_eq!(counts.origins, 2);
+        assert_eq!(counts.places, 2);
+        assert_eq!(counts.visits, 3);
+
+        let orphan_visits: i64 = dst
+            .query_row(
+                "SELECT COUNT(*) FROM moz_historyvisits v
+                 LEFT JOIN moz_places p ON v.place_id = p.id
+                 WHERE p.id IS NULL",
+                [],
+                |r| r.get(0),
             )
             .unwrap();
+        assert_eq!(orphan_visits, 0, "visits must reference existing places");
+    }
 
-        // Insert test data
-        src_conn.execute(
-            "INSERT INTO moz_origins (prefix, host, frecency) VALUES ('https://', 'example.com', 100)",
-            [],
-        ).unwrap();
-        src_conn.execute(
-            "INSERT INTO moz_places (url, title, rev_host, visit_count, guid, url_hash) VALUES ('https://example.com/', 'Test', 'moc.elpmaxe', 5, 'test-guid-1', 12345)",
-            [],
-        ).unwrap();
-        src_conn.execute(
-            "INSERT INTO moz_historyvisits (place_id, visit_date, visit_type, session) VALUES (1, 1234567890000000, 1, 1)",
-            [],
-        ).unwrap();
+    /// Regression: source origin ids that are sparse or collide with ids the
+    /// destination assigns on its own must be translated to destination ids.
+    ///
+    /// With contiguous fixture ids (1..N) an untranslated id looks fine, so
+    /// this test deliberately gives the source origins ids 50 and 99 — copying
+    /// them verbatim would either violate the FK or silently link places to
+    /// the wrong origin.
+    #[test]
+    fn test_sparse_source_origin_ids_are_translated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("firefox_profile");
+        let dst_dir = tmp.path().join("librewolf_profile");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst_dir).unwrap();
 
-        // Create destination database
-        let dst_db = dst_dir.join("places.sqlite");
-        let _ = open_dest_db(&dst_db).unwrap();
+        let src_db = create_test_db(&src_dir);
+        {
+            let conn = open_dest_db(&src_db).unwrap();
+            conn.execute(
+                "INSERT INTO moz_origins (id, prefix, host, frecency) VALUES (50, 'https://', 'sparse.example', 100)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO moz_origins (id, prefix, host, frecency) VALUES (99, 'https://', 'other.example', 200)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO moz_places (url, title, rev_host, visit_count, guid, url_hash, origin_id)
+                 VALUES ('https://sparse.example/', 'Sparse', 'elpmaxs.es', 4, 'guid-sparse', 555, 50)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO moz_places (url, title, rev_host, visit_count, guid, url_hash, origin_id)
+                 VALUES ('https://other.example/', 'Other', 'rehcto.elpmaxs', 2, 'guid-other', 666, 99)",
+                [],
+            )
+            .unwrap();
+        }
+        let _dst_db = create_test_db(&dst_dir);
 
-        let src_profile = create_test_profile(&src_dir, "src");
-        let dst_profile = create_test_profile(&dst_dir, "dst");
+        let mut ctx = MigrationContext::new(
+            create_test_profile(&src_dir, "firefox-sparse", Browser::Firefox),
+            create_test_profile(&dst_dir, "librewolf-sparse", Browser::LibreWolf),
+            false,
+        );
+        ctx.skip_confirmation = true;
+        let stats = migrate_with_context(&ctx).unwrap();
 
-        let ctx = MigrationContext::new(src_profile, dst_profile, true);
-        let stats = migrate(&ctx).unwrap();
+        assert_eq!(stats.origins_inserted, 2);
+        assert_eq!(stats.places_inserted, 2);
 
-        assert_eq!(stats.origins_read, 1);
-        assert_eq!(stats.places_read, 1);
-        assert_eq!(stats.visits_read, 1);
+        // Every destination place must reference an origin row that exists in
+        // the destination (i.e. the id was translated, not copied).
+        let dst = open_dest_db(&_dst_db).unwrap();
+        let dangling: i64 = dst
+            .query_row(
+                "SELECT COUNT(*) FROM moz_places p
+                 LEFT JOIN moz_origins o ON p.origin_id = o.id
+                 WHERE p.origin_id IS NOT NULL AND o.id IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            dangling, 0,
+            "place.origin_id must point at a destination origin row"
+        );
+
+        // The destination assigned its own ids (1, 2); source ids 50/99 must
+        // not have been reused.
+        let max_origin_id: i64 = dst
+            .query_row("SELECT MAX(id) FROM moz_origins", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            max_origin_id < 50,
+            "destination must assign fresh ids, got {max_origin_id}"
+        );
+
+        // And each place must land on the origin matching its host.
+        let hosts_match: i64 = dst
+            .query_row(
+                "SELECT COUNT(*) FROM moz_places p JOIN moz_origins o ON p.origin_id = o.id
+                 WHERE (p.url = 'https://sparse.example/' AND o.host = 'sparse.example')
+                    OR (p.url = 'https://other.example/' AND o.host = 'other.example')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hosts_match, 2, "each place must keep its own origin");
     }
 }

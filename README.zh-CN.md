@@ -124,7 +124,7 @@ Options:
 
 - `moz_origins.id`：按 `(host, prefix)` 去重，建立 `old_id → new_id` 映射
 - `moz_places.id`：按 `(url_hash, url)` 去重，建立映射，生成新 UUID v4 作为 GUID
-- `moz_historyvisits.id`：自增重新分配，`place_id` 按映射表重写，`from_visit` 按访问顺序重链
+- `moz_historyvisits.id`：自增重新分配，`place_id` 按 `DedupContext::upsert_place` 记录的映射表重写，`from_visit` 原样保留源数据
 
 ### 合并规则
 

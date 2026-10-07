@@ -124,7 +124,7 @@ Options:
 
 - `moz_origins.id`: Dedupe by `(host, prefix)`, build `old_id → new_id` map
 - `moz_places.id`: Dedupe by `(url_hash, url)`, build map, generate new UUID v4 as GUID
-- `moz_historyvisits.id`: Auto-increment reassigned, `place_id` rewritten via map from `migrate_places`, `from_visit` re-chained by visit order
+- `moz_historyvisits.id`: Auto-increment reassigned, `place_id` rewritten via the map recorded by `DedupContext::upsert_place`, `from_visit` copied verbatim from the source row
 
 ### Merge rules
 

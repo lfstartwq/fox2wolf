@@ -282,11 +282,17 @@ impl Visit {
     }
 
     /// Dedup key: place_id + visit_date + visit_type
+    ///
+    /// This is the single source of truth for visit dedup keys — seeding the
+    /// dedup set from the destination DB must call [`Visit::key_of`] with the
+    /// same components, or cross-run visit dedup silently never matches.
     pub fn dedup_key(&self) -> String {
-        format!(
-            "{}:{}:{:?}",
-            self.place_id, self.visit_date, self.visit_type
-        )
+        Self::key_of(self.place_id, self.visit_date, self.visit_type.as_i32())
+    }
+
+    /// Build a visit dedup key from raw components (see [`Visit::dedup_key`]).
+    pub fn key_of(place_id: i64, visit_date: i64, visit_type: i32) -> String {
+        format!("{}:{}:{}", place_id, visit_date, visit_type)
     }
 }
 

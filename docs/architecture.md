@@ -23,22 +23,27 @@
 │  └─────────────────────────────────┘   │
 │  ┌─────────────────────────────────┐   │
 │  │  Database Layer (db.rs)         │   │
-│  │  - open_source_db (read-only)   │   │
-│  │  - open_dest_db (RW, optimized) │   │
-│  │  - AutoRollback transaction     │   │
+│  │  - DbContext seam:              │   │
+│  │    open_source_db (RO)          │   │
+│  │    open_dest_db / with_txn      │   │
+│  │    ensure_schema / as_conn      │   │
+│  │    with_dry_run_txn             │   │
+│  │  - AutoRollback (internal)      │   │
 │  └─────────────────────────────────┘   │
 │  ┌─────────────────────────────────┐   │
 │  │  Deduplication (dedup.rs)       │   │
-│  │  - OriginMap: (host,prefix)→id  │   │
-│  │  - PlaceMap: (url_hash,url)→id  │   │
-│  │  - VisitDedupSet: key set       │   │
-│  │  - upsert_origin/place/visit    │   │
+│  │  - DedupContext seam:           │   │
+│  │    load_from / upsert_origin    │   │
+│  │    upsert_place / upsert_visit  │   │
+│  │  - hides OriginMap/PlaceMap/    │   │
+│  │    VisitDedupSet/place_id_map/  │   │
+│  │    origin_id_map                │   │
 │  └─────────────────────────────────┘   │
 │  ┌─────────────────────────────────┐   │
 │  │  Migration Orchestration        │   │
-│  │  - migrate_origins()            │   │
-│  │  - migrate_places()             │   │
-│  │  - migrate_visits()             │   │
+│  │  - MigrationSpec / Context      │   │
+│  │  - migrate_with_context()       │   │
+│  │    (origins → places → visits)  │   │
 │  │  - validate_migration()         │   │
 │  └─────────────────────────────────┘   │
 └─────────────────────────────────────────┘
@@ -53,10 +58,11 @@ The migration executes in strict dependency order:
 3. **Visits last** — no outgoing FKs, depends on Places map
 
 Each phase:
-- Builds destination dedup map from current transaction state
 - Streams source rows ordered by primary key
-- For each row: upsert with merge logic, record ID mapping
+- For each row: upsert through `DedupContext` with merge logic, record ID mapping
 - Progress bar updates per row
+
+Dedup state itself is seeded **once** before the phases, from the destination DB inside the transaction (`DedupContext::load_from`), then kept up to date by the upserts — there is no per-phase map rebuild.
 
 ## Concurrency Model
 
@@ -67,39 +73,40 @@ Each phase:
 - Progress reporting is simpler with single stream
 - For >500k rows, bottlenecks are disk I/O and SQLite lock contention, not CPU
 
-The `AutoRollback` wrapper ensures transaction atomicity. All three phases run in one implicit transaction (committed after Visits). `recalc_frecency` and metadata updates run after commit on the same connection.
+The `DbContext::with_txn` helper (built on `AutoRollback`) ensures transaction atomicity: it commits on success and rolls back on error. Dry-run goes through `DbContext::with_dry_run_txn`, which runs the same closure but always rolls back. All three phases plus `recalc_frecency` and metadata updates run inside that single transaction.
 
 ## Data Flow
 
 ```
 Source DB (RO)          Destination DB (RW)
 ─────────────────       ──────────────────
-SELECT * FROM           BEGIN IMMEDIATE
-moz_origins             INSERT OR MERGE
-    │                       │
-    ▼                       ▼
-build OriginMap ◄─── OriginMap (in-memory)
-    │                       │
-    ▼                       ▼
-SELECT * FROM           INSERT OR MERGE
-moz_places              (with new GUID,
-    │                       url_hash)
-    ▼                       ▼
-build PlaceMap ◄─── PlaceMap (in-memory)
-    │                       │
-    ▼                       ▼
-SELECT * FROM           INSERT (deduped)
-moz_historyvisits       (place_id rewritten)
-    │                       │
-    ▼                       ▼
-build VisitDedupSet
+BEGIN IMMEDIATE
+load_from(): seed dedup maps from
+destination rows inside the txn
+(OriginMap, PlaceMap,     ◄─── OriginMap /
+VisitDedupSet)                 PlaceMap /
+    │                           VisitDedupSet
+    ▼
+explicit-column SELECT      upsert_origin
+FROM moz_origins             INSERT or reuse,
+(ORDER BY id) ────────────► record origin_id_map
     │
     ▼
-COMMIT
+explicit-column SELECT      upsert_place
+FROM moz_places              INSERT or MERGE
+(ORDER BY id) ────────────► (new GUID, url_hash,
+    │                        source→dest origin_id)
+    ▼
+explicit-column SELECT      upsert_visit
+FROM moz_historyvisits       place_id rewritten via
+(ORDER BY id) ────────────► place_id_map, dedup key
+    │                        via Visit::key_of
+    ▼
+recalc_frecency(dst_tx)     UPDATE moz_places SET frecency=...
+update_meta(dst_tx, &stats) UPDATE moz_meta
     │
     ▼
-UPDATE moz_places SET frecency=...
-UPDATE moz_meta
+COMMIT  (rolled back instead on error or --dry-run)
 ```
 
 ## ID Remapping Strategy
@@ -108,7 +115,7 @@ UPDATE moz_meta
 |-------|-----------|---------|---------|
 | `moz_origins` | `id` | `id` | `(host, prefix)` unique key → new auto-increment |
 | `moz_places` | `id` | `id` | `(url_hash, url)` dedup key → new auto-increment + new UUID v4 GUID |
-| `moz_historyvisits` | `id` | `id` | Auto-increment reassigned; `place_id` rewritten via map from `migrate_places`; `from_visit` re-chained by visit_date ordering |
+| `moz_historyvisits` | `id` | `id` | Auto-increment reassigned; `place_id` rewritten via `DedupContext.place_id_map` (recorded by `upsert_place`); `from_visit` copied verbatim from the source row |
 
 ## Merge Deduplication Logic
 
@@ -130,8 +137,8 @@ UPDATE moz_meta
 | Decision | Reason |
 |----------|--------|
 | Separate `profile.rs` | Profile discovery is browser-specific, reusable, testable in isolation |
-| `db.rs` owns PRAGMAs | Connection config belongs with connection creation; avoids scattering optimization flags |
-| `dedup.rs` stateless functions | Pure functions on maps/transactions; easy to unit test with mock transactions |
+| `db.rs` owns PRAGMAs | Connection config belongs with connection creation; both source and destination open through `DbContext`, so connection flags, PRAGMAs and transaction semantics never leak into migration code |
+| `dedup.rs` behavior object | `DedupContext` encapsulates the dedup maps behind `upsert_*` methods; orchestration sees behavior, not map plumbing |
 | `migrate.rs` orchestrates | Single entry point, clear phase boundaries, handles CLI concerns (dry-run, confirm, progress) |
 | Models in `models.rs` | Shared DTOs; `VisitType` as newtype wrapper avoids enum cast issues |
 
@@ -149,7 +156,7 @@ Firefox's actual algorithm (from `mozilla-central`) uses exponential decay curve
 Firefox's `places.sqlite` may contain invalid UTF-8 sequences in TEXT columns (notably `description`, `title`, `site_name`). The tool handles this by using `row.get_ref()` to access raw `ValueRef::Text` and `ValueRef::Blob` bytes, then applying `String::from_utf8_lossy()` for lossy conversion. See `models.rs`: `get_text_lossy()` and `get_text_lossy_required()`.
 
 ### Empty LibreWolf Profile Migration
-Previously, migrating to an empty LibreWolf profile would fail the visit migration because `migrate_visits` built its `place_id` map from the destination database (which was empty). Fixed by having `migrate_places` return a `HashMap<old_place_id, new_place_id>` that `migrate_visits` uses to rewrite `place_id` before insertion. This ensures visits can reference newly created places even when the destination database starts empty.
+Previously, migrating to an empty LibreWolf profile would fail the visit migration because the `place_id` map was built from the destination database (which was empty). Fixed by having `DedupContext::upsert_place` record a source-id → destination-id mapping as places are migrated, and `DedupContext::upsert_visit` rewrite `place_id` through that map before insertion. This ensures visits can reference newly created places even when the destination database starts empty.
 
 ## Security Considerations
 

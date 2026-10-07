@@ -41,26 +41,26 @@ Skip it for a single commit with `git commit --no-verify`.
 | File | Responsibility | Key Types/Functions |
 |------|----------------|---------------------|
 | `src/main.rs` | CLI entry, argument parsing, logging setup | `Args`, `main()`, `init_logging()`, `resolve_profile()`, `list_profiles_cmd()` |
-| `src/lib.rs` | Public API re-exports | `pub use` of the six items with consumers: `migrate`, `MigrationContext`, `MigrationStats`, `discover_profiles`, `Browser`, `Profile` |
+| `src/lib.rs` | Public API re-exports | `pub use` of the items with consumers: `migrate`, `migrate_with_spec`, `MigrationContext`, `MigrationSpec`, `MigrationStats`, `discover_profiles`, `Browser`, `Profile` |
 | `src/error.rs` | Error enum, `Result` alias | `Error`, `Result` |
 | `src/models.rs` | Data structures, serialization, UTF-8 handling | `Origin`, `Place`, `Visit`, `VisitType`, `MigrationStats`, `Microseconds`, `get_text_lossy()`, `get_text_lossy_required()` |
 | `src/profile.rs` | Profile discovery & validation | `Browser`, `Profile`, `discover_profiles()`, `get_default_profile()`, `find_profile()` |
-| `src/db.rs` | SQLite connections, schema, transactions | `open_source_db()`, `open_dest_db()`, `ensure_schema()`, `AutoRollback`, `get_table_counts()` |
-| `src/dedup.rs` | Merge/deduplication algorithms | `OriginMap`, `PlaceMap`, `VisitDedupSet`, `upsert_origin()`, `upsert_place()`, `upsert_visit()`, `recalc_frecency()`, `update_meta()` |
-| `src/migrate.rs` | Migration orchestration | `MigrationContext`, `migrate()`, `migrate_origins()`, `migrate_places()` (returns `HashMap<old_place_id, new_place_id>`), `migrate_visits()` (accepts `place_id_map`), `validate_migration()` |
+| `src/db.rs` | SQLite connections, schema, transactions | `DbContext` (seam: `open_source_db()`, `open_dest_db()`, `ensure_schema()`, `with_txn()`, `with_dry_run_txn()`, `as_conn()`, `table_counts()`, `restore_pragmas()`), `AutoRollback`, plus free helpers used by the seam and tests: `open_source_db()`, `open_dest_db()`, `ensure_schema()`, `restore_safe_pragmas()`, `get_table_counts()`, `CREATE_TABLES_SQL`, `SRC_OPEN_FLAGS`, `DST_OPEN_FLAGS` |
+| `src/dedup.rs` | Merge/deduplication algorithms | `DedupContext` (seam: `load_from()`, `upsert_origin()`, `upsert_place()`, `upsert_visit()`), `OriginMap`, `PlaceMap`, `VisitDedupSet`, `recalc_frecency()`, `update_meta()` |
+| `src/migrate.rs` | Migration orchestration | `MigrationSpec`, `MigrationContext`, `migrate_with_spec()`, `migrate()`, `migrate_with_context()` (private core), `migrate_origins_phase()`, `migrate_places_phase()`, `migrate_visits_phase()` (private), `validate_migration()` |
 | `tests/integration_test.rs` | End-to-end tests | `test_full_migration()`, `test_merge_deduplication()`, `test_discover_profiles()`, `test_migration_stats_display()` |
 
 ## Timing Constants
 
 | Constant | Location | Value | Purpose |
 |----------|----------|-------|---------|
-| Progress bar | `migrate.rs` | `total_items = origins + places + visits` | Updates per row |
+| Progress bar | `migrate.rs` | `src_origins + src_places + src_visits` (counted before the transaction) | Updates per row |
 
 > Note: The `BATCH_SIZE` and `MAX_TX_ROWS` constants were removed during cleanup. The current implementation streams row-by-row within a single transaction. For >1M rows, consider re-adding batched commits.
 
 ## Testing Conventions
 
-- **Unit tests**: In `#[cfg(test)]` modules alongside code (`dedup.rs`, `migrate.rs`)
+- **Unit tests**: In `#[cfg(test)]` modules alongside code (`db.rs` DbContext tests, `dedup.rs`, `migrate.rs`)
 - **Integration tests**: `tests/integration_test.rs` — uses `tempdir`, creates real SQLite files, exercises full pipeline
 - **Test isolation**: Each test creates fresh temp directories; no shared state
 - **Dry-run tests**: Verify read counts without writes
@@ -78,10 +78,10 @@ cargo test --test integration_test -- --nocapture
 
 1. Add `moz_bookmarks` and `moz_bookmarks_deleted` to `CREATE_TABLES_SQL` in `db.rs`
 2. Add `Bookmark` struct to `models.rs` with `from_row`/`to_insert_params`
-3. Add `BookmarkMap` type and `build_bookmark_map`/`upsert_bookmark` to `dedup.rs`
+3. Add `BookmarkMap` type and an `upsert_bookmark` method on `DedupContext` in `dedup.rs`
    - Dedup key: `(fk, type)` for bookmarks, `guid` for folders
    - Parent folder ID remapping via folder map
-4. Add `migrate_bookmarks` phase in `migrate.rs` after Places, before Visits
+4. Add a `migrate_bookmarks_phase` fn in `migrate.rs` after Places, before Visits
    - Requires folder tree walk to resolve parent IDs
 5. Add `--include-bookmarks` CLI flag in `main.rs`
 
@@ -120,11 +120,11 @@ Firefox's `places.sqlite` may contain invalid UTF-8 in TEXT columns. The tool us
 
 The tool now handles migration to an empty LibreWolf profile correctly. The fix:
 
-1. `migrate_places` returns a `HashMap<old_place_id, new_place_id>` mapping
-2. `migrate_visits` receives this map and uses it to rewrite `place_id` before insertion
+1. `DedupContext::upsert_place` records a source-place-id → destination-place-id mapping internally (`place_id_map`)
+2. `DedupContext::upsert_visit` rewrites `place_id` through that map before computing the dedup key and inserting
 3. This ensures visits can reference newly created places even when the destination database starts empty
 
-See `migrate.rs`: `migrate_places()` (returns `HashMap<i64, i64>`) and `migrate_visits()` (accepts `&HashMap<i64, i64>`).
+See `dedup.rs`: `DedupContext::place_id_map` (populated by `upsert_place`, consumed by `upsert_visit`).
 
 ## Cross-Platform Notes
 
