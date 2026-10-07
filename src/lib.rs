@@ -13,6 +13,6 @@ pub mod migrate;
 pub mod models;
 pub mod profile;
 
-pub use migrate::{migrate, MigrationContext};
+pub use migrate::{migrate, migrate_with_spec, MigrationContext, MigrationSpec};
 pub use models::MigrationStats;
 pub use profile::{discover_profiles, Browser, Profile};

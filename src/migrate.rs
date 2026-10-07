@@ -18,7 +18,33 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Migration specification describing the behavior-affecting parameters
+/// for migration. This forms the interface at the migration seam.
+#[derive(Debug, Clone)]
+pub struct MigrationSpec {
+    /// Source Firefox profile
+    pub src_profile: Profile,
+    /// Destination LibreWolf profile
+    pub dst_profile: Profile,
+    /// Dry run only, no writes to destination
+    pub dry_run: bool,
+    /// Skip confirmation prompt
+    pub yes: bool,
+}
+
+impl MigrationSpec {
+    pub fn new(src_profile: Profile, dst_profile: Profile, dry_run: bool, yes: bool) -> Self {
+        Self {
+            src_profile,
+            dst_profile,
+            dry_run,
+            yes,
+        }
+    }
+}
+
 /// Migration context
+#[derive(Clone)]
 pub struct MigrationContext {
     pub src_profile: Profile,
     pub dst_profile: Profile,
@@ -38,6 +64,16 @@ impl MigrationContext {
         }
     }
 
+    fn from_spec(spec: &MigrationSpec) -> Self {
+        Self {
+            src_profile: spec.src_profile.clone(),
+            dst_profile: spec.dst_profile.clone(),
+            dry_run: spec.dry_run,
+            skip_confirmation: spec.yes,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     pub fn cancel(&self) {
         self.cancel_flag.store(true, Ordering::Relaxed);
     }
@@ -47,8 +83,20 @@ impl MigrationContext {
     }
 }
 
-/// Execute migration
-pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
+/// Execute migration with a spec (deep seam entrypoint)
+///
+/// Invariants:
+/// - Source and destination profiles must differ (same profile is an error)
+/// - Both profiles must be valid
+/// - dry_run means no writes to destination
+/// - yes skips the confirmation prompt
+pub fn migrate_with_spec(spec: &MigrationSpec) -> Result<MigrationStats> {
+    let ctx = MigrationContext::from_spec(spec);
+    migrate_with_context(&ctx)
+}
+
+/// Execute migration using a migration context
+fn migrate_with_context(ctx: &MigrationContext) -> Result<MigrationStats> {
     // 1. Check source and destination are not the same
     if ctx.src_profile.path == ctx.dst_profile.path {
         return Err(Error::SameProfile {
@@ -171,6 +219,11 @@ pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
     }
 
     Ok(stats)
+}
+
+/// Execute migration (thin adapter over the seam for backward compatibility)
+pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
+    migrate_with_context(ctx)
 }
 
 /// Migrate Origins
