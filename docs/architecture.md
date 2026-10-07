@@ -161,6 +161,7 @@ Previously, migrating to an empty LibreWolf profile would fail the visit migrati
 ## Security Considerations
 
 - Source DB opened `READ_ONLY | NO_MUTEX` — no modification possible
+- Destination open is verified with `is_readonly` right after opening; SQLite's silent read-only downgrade (write `CreateFile` denied) fails fast with `Error::ReadOnlyDestination` instead of surfacing later at the first write statement
 - Destination DB uses `IMMEDIATE` transaction — prevents lock upgrade races
 - No SQL interpolation — all params via `rusqlite::params![]`
 - Path traversal: Profile paths resolved via `directories-next`, validated against `places.sqlite` existence

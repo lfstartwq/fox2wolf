@@ -118,6 +118,15 @@ pub fn open_source_db(path: &Path) -> Result<Connection> {
 /// Open the destination database read-write with write optimizations.
 pub fn open_dest_db(path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(path, DST_OPEN_FLAGS)?;
+    // Fail fast if SQLite silently downgraded us to a read-only open (its Win32
+    // VFS falls back to READONLY when the read-write CreateFile fails but the
+    // file is readable). Without this check the failure resurfaces much later
+    // as an opaque "attempt to write a readonly database" on the first write.
+    if conn.is_readonly(rusqlite::DatabaseName::Main)? {
+        return Err(crate::error::Error::ReadOnlyDestination {
+            path: path.to_path_buf(),
+        });
+    }
     conn.execute("PRAGMA foreign_keys = ON", [])?;
     conn.execute_batch(DST_PERF_PRAGMAS)?;
     let _: Option<String> = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
@@ -347,6 +356,31 @@ mod db_tests {
         .unwrap();
         let counts = ctx.table_counts().unwrap();
         assert_eq!(counts.places, 0);
+    }
+
+    #[test]
+    fn test_open_dest_db_rejects_silently_readonly_open() {
+        // A read-only file makes SQLite's VFS fall back to a read-only open even
+        // though we requested READ_WRITE (silent downgrade). open_dest_db must
+        // fail fast with ReadOnlyDestination instead of deferring the failure to
+        // the first write ("attempt to write a readonly database").
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("ro.db");
+        drop(DbContext::open_dest_db(&path).unwrap());
+
+        let orig = std::fs::metadata(&path).unwrap().permissions();
+        let mut ro = orig.clone();
+        ro.set_readonly(true);
+        std::fs::set_permissions(&path, ro).unwrap();
+
+        let err = open_dest_db(&path).unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::ReadOnlyDestination { .. }),
+            "unexpected error: {err}"
+        );
+
+        // Restore writability so tempdir cleanup can remove the file.
+        std::fs::set_permissions(&path, orig).unwrap();
     }
 
     #[test]

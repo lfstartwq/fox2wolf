@@ -47,7 +47,16 @@ struct Args {
     no_progress: bool,
 }
 
-fn main() -> Result<()> {
+fn main() {
+    // Print errors with their Display message (actionable text) instead of the
+    // Debug representation that `fn main() -> Result<()>` would produce.
+    if let Err(err) = run() {
+        eprintln!("Error: {err}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let args = Args::parse();
 
     // Initialize logging

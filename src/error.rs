@@ -29,6 +29,14 @@ pub enum Error {
     #[error("Invalid profile directory: {path} (missing places.sqlite)")]
     InvalidProfileDir { path: PathBuf },
 
+    #[error(
+        "Destination database is read-only: {path} — SQLite silently fell back to a \
+         read-only open. The file may be locked by another process, have its read-only \
+         attribute set, or be blocked by security software (e.g. antivirus or \
+         Controlled Folder Access). Close LibreWolf and retry."
+    )]
+    ReadOnlyDestination { path: PathBuf },
+
     #[error("Backup confirmation failed: user cancelled")]
     BackupNotConfirmed,
 
