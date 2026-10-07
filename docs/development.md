@@ -28,12 +28,20 @@ cargo clippy -- -D warnings
 cargo doc --open
 ```
 
+A pre-commit hook runs formatting, linting, and tests. Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Skip it for a single commit with `git commit --no-verify`.
+
 ## Per-File Map
 
 | File | Responsibility | Key Types/Functions |
 |------|----------------|---------------------|
 | `src/main.rs` | CLI entry, argument parsing, logging setup | `Args`, `main()`, `init_logging()`, `resolve_profile()`, `list_profiles_cmd()` |
-| `src/lib.rs` | Public API re-exports | `pub use` for all modules |
+| `src/lib.rs` | Public API re-exports | `pub use` of the six items with consumers: `migrate`, `MigrationContext`, `MigrationStats`, `discover_profiles`, `Browser`, `Profile` |
 | `src/error.rs` | Error enum, `Result` alias | `Error`, `Result` |
 | `src/models.rs` | Data structures, serialization, UTF-8 handling | `Origin`, `Place`, `Visit`, `VisitType`, `MigrationStats`, `Microseconds`, `get_text_lossy()`, `get_text_lossy_required()` |
 | `src/profile.rs` | Profile discovery & validation | `Browser`, `Profile`, `discover_profiles()`, `get_default_profile()`, `find_profile()` |
@@ -173,5 +181,6 @@ diff ff_schema.sql lw_schema.sql
 - [ ] `cargo clippy -- -D warnings`
 - [ ] `cargo fmt --check`
 - [ ] `cargo build --release`
+- [ ] Run `fox2wolf --dry-run` against a real Firefox/LibreWolf profile pair; confirm the reported counts look right
 - [ ] Test binary on target platforms (Windows, Linux, macOS)
 - [ ] Publish release manually: `gh release create vX.Y.Z <binaries>` (or via web UI); no release workflow is committed in this repo
