@@ -28,13 +28,13 @@ cargo clippy -- -D warnings
 cargo doc --open
 ```
 
-A pre-commit hook runs formatting, linting, and tests. Enable it once per clone:
+There is no local hook — run these before committing:
 
 ```bash
-git config core.hooksPath .githooks
+cargo fmt --check --all
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo nextest run --workspace --locked
 ```
-
-Skip it for a single commit with `git commit --no-verify`.
 
 ## Per-File Map
 
