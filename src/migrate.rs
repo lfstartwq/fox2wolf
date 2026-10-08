@@ -4,11 +4,10 @@
 //! Core migration logic
 //!
 //! This module orchestrates the migration from Firefox to LibreWolf history.
-//! The deep seam is [`migrate_with_spec`] which accepts a [`MigrationSpec`] and
-//! delegates to [`migrate_with_context`] — all SQLite-specific details are hidden
-//! behind [`DbContext`] and [`DedupContext`].
+//! The single entrypoint is [`migrate`], which takes a [`MigrationContext`] —
+//! all SQLite-specific details are hidden behind [`DbContext`] and [`DedupContext`].
 
-use crate::db::{self, DbContext};
+use crate::db::DbContext;
 use crate::dedup::{recalc_frecency, update_meta, DedupContext};
 use crate::error::{Error, Result};
 use crate::models::{MigrationStats, Origin, Place, Visit};
@@ -19,32 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Migration specification describing the behavior-affecting parameters
-/// for migration. This forms the interface at the migration seam.
-#[derive(Debug, Clone)]
-pub struct MigrationSpec {
-    /// Source Firefox profile
-    pub src_profile: Profile,
-    /// Destination LibreWolf profile
-    pub dst_profile: Profile,
-    /// Dry run only, no writes to destination
-    pub dry_run: bool,
-    /// Skip confirmation prompt
-    pub yes: bool,
-}
-
-impl MigrationSpec {
-    pub fn new(src_profile: Profile, dst_profile: Profile, dry_run: bool, yes: bool) -> Self {
-        Self {
-            src_profile,
-            dst_profile,
-            dry_run,
-            yes,
-        }
-    }
-}
-
-/// Migration context
+/// Migration context — the interface at the migration seam.
 #[derive(Clone)]
 pub struct MigrationContext {
     pub src_profile: Profile,
@@ -55,22 +29,13 @@ pub struct MigrationContext {
 }
 
 impl MigrationContext {
-    pub fn new(src_profile: Profile, dst_profile: Profile, dry_run: bool) -> Self {
+    /// `yes` skips the confirmation prompt.
+    pub fn new(src_profile: Profile, dst_profile: Profile, dry_run: bool, yes: bool) -> Self {
         Self {
             src_profile,
             dst_profile,
             dry_run,
-            skip_confirmation: false,
-            cancel_flag: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    fn from_spec(spec: &MigrationSpec) -> Self {
-        Self {
-            src_profile: spec.src_profile.clone(),
-            dst_profile: spec.dst_profile.clone(),
-            dry_run: spec.dry_run,
-            skip_confirmation: spec.yes,
+            skip_confirmation: yes,
             cancel_flag: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -84,26 +49,16 @@ impl MigrationContext {
     }
 }
 
-/// Execute migration with a spec (deep seam entrypoint)
+/// Execute the migration — the single public entrypoint.
 ///
 /// Invariants:
 /// - Source and destination profiles must differ (same profile is an error)
 /// - Both profiles must be valid
 /// - dry_run means no writes to destination
-/// - yes skips the confirmation prompt
-pub fn migrate_with_spec(spec: &MigrationSpec) -> Result<MigrationStats> {
-    let ctx = MigrationContext::from_spec(spec);
-    migrate_with_context(&ctx)
-}
-
-/// Execute migration using a migration context (thin adapter over the spec seam).
-pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
-    migrate_with_context(ctx)
-}
-
-/// Execute migration using a migration context
+/// - skip_confirmation (yes) skips the confirmation prompt
+///
 /// The context hides all orchestration state behind the db/dedup seams.
-fn migrate_with_context(ctx: &MigrationContext) -> Result<MigrationStats> {
+pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
     // 1. Check source and destination are not the same
     if ctx.src_profile.path == ctx.dst_profile.path {
         return Err(Error::SameProfile {
@@ -223,7 +178,7 @@ fn migrate_with_context(ctx: &MigrationContext) -> Result<MigrationStats> {
 
     // 10. Post-migration validation (destination only; skipped in dry-run)
     if !ctx.dry_run {
-        validate_migration(db.as_conn(), &stats)?;
+        validate_migration(&db, &stats)?;
     }
 
     Ok(stats)
@@ -328,8 +283,8 @@ fn migrate_visits_phase(
 }
 
 /// Post-migration validation: basic sanity plus foreign-key integrity.
-fn validate_migration(dst: &Connection, stats: &MigrationStats) -> Result<()> {
-    let dst_counts = db::get_table_counts(dst)?;
+fn validate_migration(db: &DbContext, stats: &MigrationStats) -> Result<()> {
+    let dst_counts = db.table_counts()?;
     let (dst_places, dst_visits) = (dst_counts.places, dst_counts.visits);
 
     if stats.places_inserted + stats.places_merged == 0 && stats.visits_inserted == 0 {
@@ -339,7 +294,7 @@ fn validate_migration(dst: &Connection, stats: &MigrationStats) -> Result<()> {
     }
 
     // Check foreign key integrity
-    let orphan_visits: i64 = dst.query_row(
+    let orphan_visits: i64 = db.as_conn().query_row(
         "SELECT COUNT(*) FROM moz_historyvisits v LEFT JOIN moz_places p ON v.place_id = p.id WHERE p.id IS NULL",
         [],
         |r| r.get(0),
@@ -360,19 +315,19 @@ fn validate_migration(dst: &Connection, stats: &MigrationStats) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{open_dest_db, CREATE_TABLES_SQL};
     use crate::profile::Browser;
     use std::path::{Path, PathBuf};
 
     fn create_test_db(dir: &Path) -> PathBuf {
         let db_path = dir.join("places.sqlite");
-        let conn = open_dest_db(&db_path).unwrap();
-        conn.execute_batch(CREATE_TABLES_SQL).unwrap();
+        let ctx = DbContext::open_dest_db(&db_path).unwrap();
+        ctx.ensure_schema().unwrap();
         db_path
     }
 
     fn insert_test_data(db_path: &Path) {
-        let conn = open_dest_db(db_path).unwrap();
+        let ctx = DbContext::open_dest_db(db_path).unwrap();
+        let conn = ctx.as_conn();
         conn.execute(
             "INSERT INTO moz_origins (prefix, host, frecency) VALUES ('https://', 'example.com', 100)",
             [],
@@ -441,17 +396,16 @@ mod tests {
         let dst_profile = create_test_profile(&dst_dir, "librewolf-test", Browser::LibreWolf);
 
         // Run migration (dry-run)
-        let ctx = MigrationContext::new(src_profile.clone(), dst_profile.clone(), true);
-        let stats = migrate_with_context(&ctx).unwrap();
+        let ctx = MigrationContext::new(src_profile.clone(), dst_profile.clone(), true, false);
+        let stats = migrate(&ctx).unwrap();
 
         assert_eq!(stats.origins_read, 2);
         assert_eq!(stats.places_read, 2);
         assert_eq!(stats.visits_read, 3);
 
         // Actual migration (skip confirmation)
-        let mut ctx = MigrationContext::new(src_profile, dst_profile, false);
-        ctx.skip_confirmation = true;
-        let stats = migrate_with_context(&ctx).unwrap();
+        let ctx = MigrationContext::new(src_profile, dst_profile, false, true);
+        let stats = migrate(&ctx).unwrap();
 
         assert_eq!(stats.origins_read, 2);
         assert_eq!(stats.places_read, 2);
@@ -462,13 +416,14 @@ mod tests {
 
         // Verify the destination actually holds the expected rows, and that
         // visits point at destination place ids (not copied source ids).
-        let dst = open_dest_db(&_dst_db).unwrap();
-        let counts = crate::db::get_table_counts(&dst).unwrap();
+        let dst = DbContext::open_dest_db(&_dst_db).unwrap();
+        let counts = dst.table_counts().unwrap();
         assert_eq!(counts.origins, 2);
         assert_eq!(counts.places, 2);
         assert_eq!(counts.visits, 3);
 
         let orphan_visits: i64 = dst
+            .as_conn()
             .query_row(
                 "SELECT COUNT(*) FROM moz_historyvisits v
                  LEFT JOIN moz_places p ON v.place_id = p.id
@@ -497,7 +452,8 @@ mod tests {
 
         let src_db = create_test_db(&src_dir);
         {
-            let conn = open_dest_db(&src_db).unwrap();
+            let ctx = DbContext::open_dest_db(&src_db).unwrap();
+            let conn = ctx.as_conn();
             conn.execute(
                 "INSERT INTO moz_origins (id, prefix, host, frecency) VALUES (50, 'https://', 'sparse.example', 100)",
                 [],
@@ -523,21 +479,22 @@ mod tests {
         }
         let _dst_db = create_test_db(&dst_dir);
 
-        let mut ctx = MigrationContext::new(
+        let ctx = MigrationContext::new(
             create_test_profile(&src_dir, "firefox-sparse", Browser::Firefox),
             create_test_profile(&dst_dir, "librewolf-sparse", Browser::LibreWolf),
             false,
+            true,
         );
-        ctx.skip_confirmation = true;
-        let stats = migrate_with_context(&ctx).unwrap();
+        let stats = migrate(&ctx).unwrap();
 
         assert_eq!(stats.origins_inserted, 2);
         assert_eq!(stats.places_inserted, 2);
 
         // Every destination place must reference an origin row that exists in
         // the destination (i.e. the id was translated, not copied).
-        let dst = open_dest_db(&_dst_db).unwrap();
+        let dst = DbContext::open_dest_db(&_dst_db).unwrap();
         let dangling: i64 = dst
+            .as_conn()
             .query_row(
                 "SELECT COUNT(*) FROM moz_places p
                  LEFT JOIN moz_origins o ON p.origin_id = o.id
@@ -554,6 +511,7 @@ mod tests {
         // The destination assigned its own ids (1, 2); source ids 50/99 must
         // not have been reused.
         let max_origin_id: i64 = dst
+            .as_conn()
             .query_row("SELECT MAX(id) FROM moz_origins", [], |r| r.get(0))
             .unwrap();
         assert!(
@@ -563,6 +521,7 @@ mod tests {
 
         // And each place must land on the origin matching its host.
         let hosts_match: i64 = dst
+            .as_conn()
             .query_row(
                 "SELECT COUNT(*) FROM moz_places p JOIN moz_origins o ON p.origin_id = o.id
                  WHERE (p.url = 'https://sparse.example/' AND o.host = 'sparse.example')

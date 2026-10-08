@@ -41,8 +41,8 @@
 │  └─────────────────────────────────┘   │
 │  ┌─────────────────────────────────┐   │
 │  │  Migration Orchestration        │   │
-│  │  - MigrationSpec / Context      │   │
-│  │  - migrate_with_context()       │   │
+│  │  - MigrationContext             │   │
+│  │  - migrate()                    │   │
 │  │    (origins → places → visits)  │   │
 │  │  - validate_migration()         │   │
 │  └─────────────────────────────────┘   │

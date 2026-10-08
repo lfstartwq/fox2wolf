@@ -41,13 +41,13 @@ cargo nextest run --workspace --locked
 | File | Responsibility | Key Types/Functions |
 |------|----------------|---------------------|
 | `src/main.rs` | CLI entry, argument parsing, logging setup | `Args`, `main()` (prints `Display` error, exits 1), `run()`, `init_logging()`, `resolve_profile()`, `list_profiles_cmd()` |
-| `src/lib.rs` | Public API re-exports | `pub use` of the items with consumers: `migrate`, `migrate_with_spec`, `MigrationContext`, `MigrationSpec`, `MigrationStats`, `discover_profiles`, `Browser`, `Profile` |
+| `src/lib.rs` | Public API re-exports | `pub use` of the items with consumers: `migrate`, `MigrationContext`, `MigrationStats`, `discover_profiles`, `Browser`, `Profile` |
 | `src/error.rs` | Error enum, `Result` alias | `Error`, `Result` |
 | `src/models.rs` | Data structures, serialization, UTF-8 handling | `Origin`, `Place`, `Visit`, `VisitType`, `MigrationStats`, `Microseconds`, `get_text_lossy()`, `get_text_lossy_required()` |
 | `src/profile.rs` | Profile discovery & validation | `Browser`, `Profile`, `discover_profiles()`, `get_default_profile()`, `find_profile()` |
-| `src/db.rs` | SQLite connections, schema, transactions | `DbContext` (seam: `open_source_db()`, `open_dest_db()` (fail-fast: rejects a silently read-only open with `Error::ReadOnlyDestination`), `ensure_schema()`, `with_txn()`, `with_dry_run_txn()`, `as_conn()`, `table_counts()`, `restore_pragmas()`), `AutoRollback`, plus free helpers used by the seam and tests: `open_source_db()`, `open_dest_db()`, `ensure_schema()`, `restore_safe_pragmas()`, `get_table_counts()`, `CREATE_TABLES_SQL`, `SRC_OPEN_FLAGS`, `DST_OPEN_FLAGS` |
+| `src/db.rs` | SQLite connections, schema, transactions | `DbContext` — the only entry point (seam: `open_source_db()`, `open_dest_db()` (fail-fast: rejects a silently read-only open with `Error::ReadOnlyDestination`), `ensure_schema()`, `with_txn()`, `with_dry_run_txn()`, `as_conn()`, `table_counts()`, `restore_pragmas()`), `AutoRollback`, `TableCounts`, `CREATE_TABLES_SQL` |
 | `src/dedup.rs` | Merge/deduplication algorithms | `DedupContext` (seam: `load_from()`, `upsert_origin()`, `upsert_place()`, `upsert_visit()`), `OriginMap`, `PlaceMap`, `VisitDedupSet`, `recalc_frecency()`, `update_meta()` |
-| `src/migrate.rs` | Migration orchestration | `MigrationSpec`, `MigrationContext`, `migrate_with_spec()`, `migrate()`, `migrate_with_context()` (private core), `migrate_origins_phase()`, `migrate_places_phase()`, `migrate_visits_phase()` (private), `validate_migration()` |
+| `src/migrate.rs` | Migration orchestration | `MigrationContext`, `migrate()` (single public entrypoint), `migrate_origins_phase()`, `migrate_places_phase()`, `migrate_visits_phase()` (private), `validate_migration()` |
 | `tests/integration_test.rs` | End-to-end tests | `test_full_migration()`, `test_merge_deduplication()`, `test_discover_profiles()`, `test_migration_stats_display()` |
 
 ## Timing Constants

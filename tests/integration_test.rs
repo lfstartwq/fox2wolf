@@ -3,20 +3,21 @@
 
 //! Integration tests
 
-use fox2wolf::db::{get_table_counts, open_dest_db, CREATE_TABLES_SQL};
+use fox2wolf::db::DbContext;
 use fox2wolf::{discover_profiles, migrate, Browser, MigrationContext, MigrationStats, Profile};
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 fn create_test_db(dir: &Path) -> PathBuf {
     let db_path = dir.join("places.sqlite");
-    let conn = open_dest_db(&db_path).unwrap();
-    conn.execute_batch(CREATE_TABLES_SQL).unwrap();
+    let ctx = DbContext::open_dest_db(&db_path).unwrap();
+    ctx.ensure_schema().unwrap();
     db_path
 }
 
 fn insert_test_data(db_path: &Path) {
-    let conn = open_dest_db(db_path).unwrap();
+    let ctx = DbContext::open_dest_db(db_path).unwrap();
+    let conn = ctx.as_conn();
 
     // origins
     conn.execute(
@@ -88,7 +89,7 @@ fn test_full_migration() {
     let dst_profile = create_profile(&dst_dir, "librewolf-test", Browser::LibreWolf);
 
     // Run migration (dry-run)
-    let ctx = MigrationContext::new(src_profile.clone(), dst_profile.clone(), true);
+    let ctx = MigrationContext::new(src_profile.clone(), dst_profile.clone(), true, false);
     let stats = migrate(&ctx).unwrap();
 
     assert_eq!(stats.origins_read, 2);
@@ -96,8 +97,7 @@ fn test_full_migration() {
     assert_eq!(stats.visits_read, 3);
 
     // Actual migration (skip confirmation)
-    let mut ctx = MigrationContext::new(src_profile, dst_profile, false);
-    ctx.skip_confirmation = true;
+    let ctx = MigrationContext::new(src_profile, dst_profile, false, true);
     let stats = migrate(&ctx).unwrap();
 
     assert_eq!(stats.origins_read, 2);
@@ -108,8 +108,8 @@ fn test_full_migration() {
     assert_eq!(stats.visits_inserted, 3);
 
     // Verify destination database
-    let conn = open_dest_db(&dst_db).unwrap();
-    let counts = get_table_counts(&conn).unwrap();
+    let db = DbContext::open_dest_db(&dst_db).unwrap();
+    let counts = db.table_counts().unwrap();
     assert_eq!(counts.origins, 2);
     assert_eq!(counts.places, 2);
     assert_eq!(counts.visits, 3);
@@ -126,7 +126,8 @@ fn test_merge_deduplication() {
     // Pre-populate destination with same URL
     let dst_db = create_test_db(&dst_dir);
     {
-        let conn = open_dest_db(&dst_db).unwrap();
+        let ctx = DbContext::open_dest_db(&dst_db).unwrap();
+        let conn = ctx.as_conn();
         conn.execute(
             "INSERT INTO moz_origins (prefix, host, frecency) VALUES ('https://', 'example.com', 50)",
             [],
@@ -145,7 +146,8 @@ fn test_merge_deduplication() {
     // Source has same URL, different visit_count
     let src_db = create_test_db(&src_dir);
     {
-        let conn = open_dest_db(&src_db).unwrap();
+        let ctx = DbContext::open_dest_db(&src_db).unwrap();
+        let conn = ctx.as_conn();
         conn.execute(
             "INSERT INTO moz_origins (prefix, host, frecency) VALUES ('https://', 'example.com', 100)",
             [],
@@ -165,8 +167,7 @@ fn test_merge_deduplication() {
     let src_profile = create_profile(&src_dir, "firefox", Browser::Firefox);
     let dst_profile = create_profile(&dst_dir, "librewolf", Browser::LibreWolf);
 
-    let mut ctx = MigrationContext::new(src_profile, dst_profile, false);
-    ctx.skip_confirmation = true;
+    let ctx = MigrationContext::new(src_profile, dst_profile, false, true);
     let stats = migrate(&ctx).unwrap();
 
     // Verify merge results
@@ -174,8 +175,9 @@ fn test_merge_deduplication() {
     assert_eq!(stats.places_inserted, 0); // 0 inserted
     assert_eq!(stats.visits_inserted, 1); // 1 new visit
 
-    let conn = open_dest_db(&dst_db).unwrap();
-    let visit_count: i64 = conn
+    let db = DbContext::open_dest_db(&dst_db).unwrap();
+    let visit_count: i64 = db
+        .as_conn()
         .query_row(
             "SELECT visit_count FROM moz_places WHERE url = 'https://example.com/'",
             [],
@@ -185,7 +187,8 @@ fn test_merge_deduplication() {
     // Destination had 10 + source 5 = 15
     assert_eq!(visit_count, 15);
 
-    let last_visit: Option<i64> = conn
+    let last_visit: Option<i64> = db
+        .as_conn()
         .query_row(
             "SELECT last_visit_date FROM moz_places WHERE url = 'https://example.com/'",
             [],

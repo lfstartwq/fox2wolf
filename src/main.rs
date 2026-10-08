@@ -5,7 +5,7 @@
 
 use clap::Parser;
 use fox2wolf::error::Result;
-use fox2wolf::migrate::{migrate_with_spec, MigrationSpec};
+use fox2wolf::migrate::{migrate, MigrationContext};
 use fox2wolf::profile::{discover_profiles, find_profile, get_default_profile, Browser, Profile};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -83,14 +83,14 @@ fn run() -> Result<()> {
         dst_profile.path.display()
     );
 
-    // Create migration spec at the seam
-    let spec = MigrationSpec::new(src_profile, dst_profile, args.dry_run, args.yes);
+    // Create migration context at the seam
+    let ctx = MigrationContext::new(src_profile, dst_profile, args.dry_run, args.yes);
 
     // Execute migration
     println!("\n🦊 Firefox → LibreWolf History Migration");
     println!("=========================================\n");
 
-    let stats = migrate_with_spec(&spec)?;
+    let stats = migrate(&ctx)?;
 
     // Output results
     stats.print_summary();

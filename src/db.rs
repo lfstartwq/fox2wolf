@@ -19,12 +19,12 @@ use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
 use std::path::Path;
 
 /// Flags for opening the source database read-only.
-pub const SRC_OPEN_FLAGS: OpenFlags = OpenFlags::SQLITE_OPEN_READ_ONLY
+const SRC_OPEN_FLAGS: OpenFlags = OpenFlags::SQLITE_OPEN_READ_ONLY
     .union(OpenFlags::SQLITE_OPEN_NO_MUTEX)
     .union(OpenFlags::SQLITE_OPEN_FULL_MUTEX);
 
 /// Flags for opening the destination database read-write.
-pub const DST_OPEN_FLAGS: OpenFlags = OpenFlags::SQLITE_OPEN_READ_WRITE
+const DST_OPEN_FLAGS: OpenFlags = OpenFlags::SQLITE_OPEN_READ_WRITE
     .union(OpenFlags::SQLITE_OPEN_CREATE)
     .union(OpenFlags::SQLITE_OPEN_FULL_MUTEX);
 
@@ -107,47 +107,6 @@ const DST_SAFE_PRAGMAS: &str = "PRAGMA synchronous = NORMAL;\
      PRAGMA cache_size = -2000;\
      PRAGMA page_size = 4096;";
 
-/// Open the source database read-only.
-pub fn open_source_db(path: &Path) -> Result<Connection> {
-    let conn = Connection::open_with_flags(path, SRC_OPEN_FLAGS)?;
-    // Disable foreign key checks to speed up the read-only source.
-    conn.execute("PRAGMA foreign_keys = OFF", [])?;
-    Ok(conn)
-}
-
-/// Open the destination database read-write with write optimizations.
-pub fn open_dest_db(path: &Path) -> Result<Connection> {
-    let conn = Connection::open_with_flags(path, DST_OPEN_FLAGS)?;
-    // Fail fast if SQLite silently downgraded us to a read-only open (its Win32
-    // VFS falls back to READONLY when the read-write CreateFile fails but the
-    // file is readable). Without this check the failure resurfaces much later
-    // as an opaque "attempt to write a readonly database" on the first write.
-    if conn.is_readonly(rusqlite::DatabaseName::Main)? {
-        return Err(crate::error::Error::ReadOnlyDestination {
-            path: path.to_path_buf(),
-        });
-    }
-    conn.execute("PRAGMA foreign_keys = ON", [])?;
-    conn.execute_batch(DST_PERF_PRAGMAS)?;
-    let _: Option<String> = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
-    let _: Option<i64> = conn.query_row("PRAGMA mmap_size = 268435456", [], |r| r.get(0))?;
-    Ok(conn)
-}
-
-/// Ensure the destination schema exists (idempotent).
-pub fn ensure_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(CREATE_TABLES_SQL)?;
-    Ok(())
-}
-
-/// Restore safe PRAGMAs on the destination after migration completes.
-pub fn restore_safe_pragmas(conn: &Connection) -> Result<()> {
-    conn.execute_batch(DST_SAFE_PRAGMAS)?;
-    // Re-enable WAL after switching to safe defaults.
-    let _: Option<String> = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
-    Ok(())
-}
-
 /// Transaction wrapper with auto-rollback on drop.
 ///
 /// Internal to `DbContext::with_txn` and `with_dry_run_txn`: it exists so that
@@ -195,49 +154,52 @@ pub struct TableCounts {
     pub visits: usize,
 }
 
-/// Get table counts (origins, places, visits).
-pub fn get_table_counts(conn: &Connection) -> Result<TableCounts> {
-    let origins: i64 = conn.query_row("SELECT COUNT(*) FROM moz_origins", [], |r| r.get(0))?;
-    let places: i64 = conn.query_row("SELECT COUNT(*) FROM moz_places", [], |r| r.get(0))?;
-    let visits: i64 = conn.query_row("SELECT COUNT(*) FROM moz_historyvisits", [], |r| r.get(0))?;
-    Ok(TableCounts {
-        origins: origins as usize,
-        places: places as usize,
-        visits: visits as usize,
-    })
-}
-
 /// Thin, intent-revealing wrapper around a SQLite connection.
 ///
 /// This is the seam between the migration orchestration and the database layer:
 /// callers open a source (read-only) or destination (read-write) context, ensure
 /// the schema, run a unit-of-work inside `with_txn`, and query statistics. All
 /// SQLite-specific behavior (connection flags, PRAGMAs, transaction semantics,
-/// schema creation) is concentrated here and implemented in terms of the
-/// lower-level functions.
+/// schema creation) is concentrated here — there is no parallel set of free
+/// functions; `DbContext` is the only entry point.
 #[derive(Debug)]
 pub struct DbContext {
     conn: Connection,
 }
 
 impl DbContext {
-    /// Open the source database as read-only.
+    /// Open the source database read-only.
     pub fn open_source_db(path: &Path) -> Result<Self> {
-        Ok(Self {
-            conn: open_source_db(path)?,
-        })
+        let conn = Connection::open_with_flags(path, SRC_OPEN_FLAGS)?;
+        // Disable foreign key checks to speed up the read-only source.
+        conn.execute("PRAGMA foreign_keys = OFF", [])?;
+        Ok(Self { conn })
     }
 
     /// Open the destination database read-write with write optimizations.
     pub fn open_dest_db(path: &Path) -> Result<Self> {
-        Ok(Self {
-            conn: open_dest_db(path)?,
-        })
+        let conn = Connection::open_with_flags(path, DST_OPEN_FLAGS)?;
+        // Fail fast if SQLite silently downgraded us to a read-only open (its
+        // Win32 VFS falls back to READONLY when the read-write CreateFile fails
+        // but the file is readable). Without this check the failure resurfaces
+        // much later as an opaque "attempt to write a readonly database" on
+        // the first write.
+        if conn.is_readonly(rusqlite::DatabaseName::Main)? {
+            return Err(crate::error::Error::ReadOnlyDestination {
+                path: path.to_path_buf(),
+            });
+        }
+        conn.execute("PRAGMA foreign_keys = ON", [])?;
+        conn.execute_batch(DST_PERF_PRAGMAS)?;
+        let _: Option<String> = conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+        let _: Option<i64> = conn.query_row("PRAGMA mmap_size = 268435456", [], |r| r.get(0))?;
+        Ok(Self { conn })
     }
 
     /// Ensure the destination schema exists (idempotent).
     pub fn ensure_schema(&self) -> Result<()> {
-        ensure_schema(&self.conn)
+        self.conn.execute_batch(CREATE_TABLES_SQL)?;
+        Ok(())
     }
 
     /// Run a closure inside an `IMMEDIATE` transaction and commit on `Ok`.
@@ -278,12 +240,30 @@ impl DbContext {
 
     /// Table counts (origins, places, visits).
     pub fn table_counts(&self) -> Result<TableCounts> {
-        get_table_counts(&self.conn)
+        let origins: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM moz_origins", [], |r| r.get(0))?;
+        let places: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM moz_places", [], |r| r.get(0))?;
+        let visits: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM moz_historyvisits", [], |r| r.get(0))?;
+        Ok(TableCounts {
+            origins: origins as usize,
+            places: places as usize,
+            visits: visits as usize,
+        })
     }
 
     /// Restore safe PRAGMAs on the destination after migration completes.
     pub fn restore_pragmas(&self) -> Result<()> {
-        restore_safe_pragmas(&self.conn)
+        self.conn.execute_batch(DST_SAFE_PRAGMAS)?;
+        // Re-enable WAL after switching to safe defaults.
+        let _: Option<String> = self
+            .conn
+            .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
+        Ok(())
     }
 }
 
@@ -381,7 +361,7 @@ mod db_tests {
         // the read-only bit for a downgrade (and thus a rejection) to happen.
         let bit_enforced = std::fs::OpenOptions::new().write(true).open(&path).is_err();
 
-        let result = open_dest_db(&path);
+        let result = DbContext::open_dest_db(&path);
 
         // Restore writability BEFORE asserting: a failing assertion must not
         // leave a read-only file behind (TempDir::Drop ignores delete errors).
