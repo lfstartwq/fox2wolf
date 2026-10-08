@@ -364,6 +364,10 @@ mod db_tests {
         // though we requested READ_WRITE (silent downgrade). open_dest_db must
         // fail fast with ReadOnlyDestination instead of deferring the failure to
         // the first write ("attempt to write a readonly database").
+        //
+        // Platforms that ignore the read-only bit (root with CAP_DAC_OVERRIDE
+        // opens 0444 files read-write) can never trigger the downgrade, so the
+        // rejection assertions are skipped there.
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("ro.db");
         drop(DbContext::open_dest_db(&path).unwrap());
@@ -373,14 +377,27 @@ mod db_tests {
         ro.set_readonly(true);
         std::fs::set_permissions(&path, ro).unwrap();
 
-        let err = open_dest_db(&path).unwrap_err();
-        assert!(
-            matches!(err, crate::error::Error::ReadOnlyDestination { .. }),
-            "unexpected error: {err}"
-        );
+        // Double-confirm the precondition: the platform must actually enforce
+        // the read-only bit for a downgrade (and thus a rejection) to happen.
+        let bit_enforced = std::fs::OpenOptions::new().write(true).open(&path).is_err();
 
-        // Restore writability so tempdir cleanup can remove the file.
+        let result = open_dest_db(&path);
+
+        // Restore writability BEFORE asserting: a failing assertion must not
+        // leave a read-only file behind (TempDir::Drop ignores delete errors).
         std::fs::set_permissions(&path, orig).unwrap();
+
+        if bit_enforced {
+            // The bit is enforced, so the silent downgrade must have occurred
+            // and open_dest_db must have rejected it.
+            let err = result
+                .expect_err("read-only bit is enforced but open_dest_db did not reject the open");
+            assert!(
+                matches!(err, crate::error::Error::ReadOnlyDestination { .. }),
+                "unexpected error: {err}"
+            );
+        }
+        // else: nothing to assert — the downgrade cannot occur here.
     }
 
     #[test]
