@@ -270,7 +270,7 @@ impl DbContext {
 #[cfg(test)]
 mod db_tests {
     use super::*;
-    use tempfile::tempdir;
+    use crate::testutil::tempdir;
 
     #[test]
     fn test_dbcontext_open_dest_and_schema() {

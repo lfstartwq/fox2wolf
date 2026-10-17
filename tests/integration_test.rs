@@ -6,7 +6,17 @@
 use fox2wolf::db::DbContext;
 use fox2wolf::{discover_profiles, migrate, Browser, MigrationContext, MigrationStats, Profile};
 use std::path::{Path, PathBuf};
-use tempfile::tempdir;
+use tempfile::TempDir;
+
+/// Test temp dirs live under `target/` instead of `%TEMP%`, so the
+/// suite also runs in environments where `%TEMP%` is not writable.
+fn tempdir() -> std::io::Result<TempDir> {
+    let base = std::path::Path::new("target").join("test-tmp");
+    std::fs::create_dir_all(&base)?;
+    tempfile::Builder::new()
+        .prefix("fox2wolf-test")
+        .tempdir_in(&base)
+}
 
 fn create_test_db(dir: &Path) -> PathBuf {
     let db_path = dir.join("places.sqlite");

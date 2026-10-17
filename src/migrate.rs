@@ -345,6 +345,7 @@ fn validate_migration(db: &DbContext, stats: &MigrationStats) -> Result<()> {
 mod tests {
     use super::*;
     use crate::profile::Browser;
+    use crate::testutil::tempdir;
     use std::path::{Path, PathBuf};
 
     fn create_test_db(dir: &Path) -> PathBuf {
@@ -408,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_dry_run_then_real_migration() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempdir().unwrap();
         let src_dir = tmp.path().join("firefox_profile");
         let dst_dir = tmp.path().join("librewolf_profile");
         std::fs::create_dir_all(&src_dir).unwrap();
@@ -474,7 +475,7 @@ mod tests {
     /// the wrong origin.
     #[test]
     fn test_sparse_source_origin_ids_are_translated() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempdir().unwrap();
         let src_dir = tmp.path().join("firefox_profile");
         let dst_dir = tmp.path().join("librewolf_profile");
         std::fs::create_dir_all(&src_dir).unwrap();
