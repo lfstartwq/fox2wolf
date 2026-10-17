@@ -84,7 +84,13 @@ fn run() -> Result<()> {
     );
 
     // Create migration context at the seam
-    let ctx = MigrationContext::new(src_profile, dst_profile, args.dry_run, args.yes);
+    let ctx = MigrationContext::new(
+        src_profile,
+        dst_profile,
+        args.dry_run,
+        args.yes,
+        args.no_progress,
+    );
 
     // Execute migration
     println!("\n🦊 Firefox → LibreWolf History Migration");

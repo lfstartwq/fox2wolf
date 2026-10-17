@@ -89,7 +89,7 @@ fn test_full_migration() {
     let dst_profile = create_profile(&dst_dir, "librewolf-test", Browser::LibreWolf);
 
     // Run migration (dry-run)
-    let ctx = MigrationContext::new(src_profile.clone(), dst_profile.clone(), true, false);
+    let ctx = MigrationContext::new(src_profile.clone(), dst_profile.clone(), true, false, false);
     let stats = migrate(&ctx).unwrap();
 
     assert_eq!(stats.origins_read, 2);
@@ -97,7 +97,7 @@ fn test_full_migration() {
     assert_eq!(stats.visits_read, 3);
 
     // Actual migration (skip confirmation)
-    let ctx = MigrationContext::new(src_profile, dst_profile, false, true);
+    let ctx = MigrationContext::new(src_profile, dst_profile, false, true, false);
     let stats = migrate(&ctx).unwrap();
 
     assert_eq!(stats.origins_read, 2);
@@ -167,7 +167,7 @@ fn test_merge_deduplication() {
     let src_profile = create_profile(&src_dir, "firefox", Browser::Firefox);
     let dst_profile = create_profile(&dst_dir, "librewolf", Browser::LibreWolf);
 
-    let ctx = MigrationContext::new(src_profile, dst_profile, false, true);
+    let ctx = MigrationContext::new(src_profile, dst_profile, false, true, false);
     let stats = migrate(&ctx).unwrap();
 
     // Verify merge results
@@ -216,7 +216,6 @@ fn test_migration_stats_display() {
         places_read: 100,
         places_inserted: 90,
         places_merged: 10,
-        places_skipped: 0,
         visits_read: 500,
         visits_inserted: 480,
         visits_skipped: 20,

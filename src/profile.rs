@@ -29,20 +29,6 @@ impl Browser {
             Browser::LibreWolf => "LibreWolf",
         }
     }
-
-    pub fn project_dirs_qualifier(&self) -> (&'static str, &'static str, &'static str) {
-        match self {
-            Browser::Firefox => ("Mozilla", "Firefox", ""),
-            Browser::LibreWolf => ("librewolf", "librewolf", ""),
-        }
-    }
-
-    pub fn profiles_dir(&self) -> Result<PathBuf> {
-        let proj = ProjectDirs::from("org", "mozilla", self.as_str())
-            .or_else(|| ProjectDirs::from("", "", self.project_dirs_qualifier().1))
-            .ok_or_else(|| Error::Other("Unable to determine config directory".into()))?;
-        Ok(proj.data_dir().join("Profiles"))
-    }
 }
 
 /// Profile info
@@ -132,7 +118,7 @@ impl std::fmt::Display for DefaultValue {
 /// Read profiles.ini, returns entries and the profiles root directory
 fn read_profiles_ini(browser: Browser) -> Result<(Vec<ProfileIniEntry>, PathBuf)> {
     let proj = ProjectDirs::from("org", "mozilla", browser.as_str())
-        .or_else(|| ProjectDirs::from("", "", browser.project_dirs_qualifier().1))
+        .or_else(|| ProjectDirs::from("", "", browser.as_str()))
         .ok_or_else(|| Error::Other("Unable to determine config directory".into()))?;
 
     let ini_path = proj.config_dir().join("profiles.ini");

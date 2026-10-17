@@ -25,17 +25,25 @@ pub struct MigrationContext {
     pub dst_profile: Profile,
     pub dry_run: bool,
     pub skip_confirmation: bool,
+    pub no_progress: bool,
     pub cancel_flag: Arc<AtomicBool>,
 }
 
 impl MigrationContext {
     /// `yes` skips the confirmation prompt.
-    pub fn new(src_profile: Profile, dst_profile: Profile, dry_run: bool, yes: bool) -> Self {
+    pub fn new(
+        src_profile: Profile,
+        dst_profile: Profile,
+        dry_run: bool,
+        yes: bool,
+        no_progress: bool,
+    ) -> Self {
         Self {
             src_profile,
             dst_profile,
             dry_run,
             skip_confirmation: yes,
+            no_progress,
             cancel_flag: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -118,12 +126,17 @@ pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
         }
     }
 
-    // 7. Progress bar over all rows to migrate
-    let pb = ProgressBar::new((src_origins + src_places + src_visits) as u64);
-    pb.set_style(ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}) {msg}")
-        .unwrap()
-        .progress_chars("█▉▊▋▌▍▎▏  "));
+    // 7. Progress bar over all rows to migrate (hidden when --no-progress)
+    let pb: Option<ProgressBar> = if ctx.no_progress {
+        None
+    } else {
+        let bar = ProgressBar::new((src_origins + src_places + src_visits) as u64);
+        bar.set_style(ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({per_sec}) {msg}")
+            .unwrap()
+            .progress_chars("█▉▊▋▌▍▎▏  "));
+        Some(bar)
+    };
 
     // 8. Run migration inside a single transaction behind the DbContext seam;
     // stats are accumulated inside the unit of work. `with_txn` commits it,
@@ -136,26 +149,28 @@ pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
         let mut dedup = DedupContext::load_from(&mut *dst_tx)?;
 
         // 8b. Origins phase
-        migrate_origins_phase(src_db.as_conn(), &mut dedup, &mut stats, ctx, &pb)?;
+        migrate_origins_phase(src_db.as_conn(), &mut dedup, &mut stats, ctx, pb.as_ref())?;
         if ctx.is_cancelled() {
             return Err(Error::Other("User cancelled".into()));
         }
 
         // 8c. Places phase
-        migrate_places_phase(src_db.as_conn(), &mut dedup, &mut stats, ctx, &pb)?;
+        migrate_places_phase(src_db.as_conn(), &mut dedup, &mut stats, ctx, pb.as_ref())?;
         if ctx.is_cancelled() {
             return Err(Error::Other("User cancelled".into()));
         }
 
         // 8d. Visits phase
-        migrate_visits_phase(src_db.as_conn(), &mut dedup, &mut stats, ctx, &pb)?;
+        migrate_visits_phase(src_db.as_conn(), &mut dedup, &mut stats, ctx, pb.as_ref())?;
 
         // 8e. Release the dedup context's borrow of the transaction before the
         // frecency/meta updates below (DbContext::with_txn owns commit/rollback).
         drop(dedup);
 
         // 8f. Recalculate frecency and update meta
-        pb.set_message("Finalizing transaction...");
+        if let Some(pb) = pb.as_ref() {
+            pb.set_message("Finalizing transaction...");
+        }
         recalc_frecency(dst_tx)?;
         update_meta(dst_tx, &stats)?;
 
@@ -174,7 +189,9 @@ pub fn migrate(ctx: &MigrationContext) -> Result<MigrationStats> {
     }
 
     stats.duration_ms = start_time.elapsed().as_millis() as u64;
-    pb.finish_with_message("Done");
+    if let Some(pb) = pb.as_ref() {
+        pb.finish_with_message("Done");
+    }
 
     // 10. Post-migration validation (destination only; skipped in dry-run)
     if !ctx.dry_run {
@@ -194,9 +211,11 @@ fn migrate_origins_phase(
     dedup: &mut DedupContext,
     stats: &mut MigrationStats,
     ctx: &MigrationContext,
-    pb: &ProgressBar,
+    pb: Option<&ProgressBar>,
 ) -> Result<()> {
-    pb.set_message("Migrating Origins...");
+    if let Some(pb) = pb.as_ref() {
+        pb.set_message("Migrating Origins...");
+    }
     let mut origin_stmt = src_conn.prepare(
         "SELECT id, prefix, host, frecency, recalc_frecency, alt_frecency, recalc_alt_frecency, block_until_ms, block_pages_until_ms FROM moz_origins ORDER BY id",
     )?;
@@ -213,7 +232,9 @@ fn migrate_origins_phase(
         } else {
             stats.origins_merged += 1;
         }
-        pb.inc(1);
+        if let Some(pb) = pb {
+            pb.inc(1);
+        }
     }
     Ok(())
 }
@@ -227,9 +248,11 @@ fn migrate_places_phase(
     dedup: &mut DedupContext,
     stats: &mut MigrationStats,
     ctx: &MigrationContext,
-    pb: &ProgressBar,
+    pb: Option<&ProgressBar>,
 ) -> Result<()> {
-    pb.set_message("Migrating Places...");
+    if let Some(pb) = pb.as_ref() {
+        pb.set_message("Migrating Places...");
+    }
     let mut place_stmt = src_conn.prepare(
         "SELECT id, url, title, rev_host, visit_count, hidden, typed, frecency, last_visit_date, guid, foreign_count, url_hash, description, preview_image_url, site_name, origin_id, recalc_frecency, alt_frecency, recalc_alt_frecency FROM moz_places ORDER BY id",
     )?;
@@ -246,7 +269,9 @@ fn migrate_places_phase(
         } else {
             stats.places_inserted += 1;
         }
-        pb.inc(1);
+        if let Some(pb) = pb {
+            pb.inc(1);
+        }
     }
     Ok(())
 }
@@ -258,9 +283,11 @@ fn migrate_visits_phase(
     dedup: &mut DedupContext,
     stats: &mut MigrationStats,
     ctx: &MigrationContext,
-    pb: &ProgressBar,
+    pb: Option<&ProgressBar>,
 ) -> Result<()> {
-    pb.set_message("Migrating Visits...");
+    if let Some(pb) = pb.as_ref() {
+        pb.set_message("Migrating Visits...");
+    }
     let mut visit_stmt = src_conn.prepare(
         "SELECT id, from_visit, place_id, visit_date, visit_type, session, source, triggeringPlaceId FROM moz_historyvisits ORDER BY id",
     )?;
@@ -277,7 +304,9 @@ fn migrate_visits_phase(
         } else {
             stats.visits_skipped += 1;
         }
-        pb.inc(1);
+        if let Some(pb) = pb {
+            pb.inc(1);
+        }
     }
     Ok(())
 }
@@ -396,7 +425,8 @@ mod tests {
         let dst_profile = create_test_profile(&dst_dir, "librewolf-test", Browser::LibreWolf);
 
         // Run migration (dry-run)
-        let ctx = MigrationContext::new(src_profile.clone(), dst_profile.clone(), true, false);
+        let ctx =
+            MigrationContext::new(src_profile.clone(), dst_profile.clone(), true, false, false);
         let stats = migrate(&ctx).unwrap();
 
         assert_eq!(stats.origins_read, 2);
@@ -404,7 +434,7 @@ mod tests {
         assert_eq!(stats.visits_read, 3);
 
         // Actual migration (skip confirmation)
-        let ctx = MigrationContext::new(src_profile, dst_profile, false, true);
+        let ctx = MigrationContext::new(src_profile, dst_profile, false, true, false);
         let stats = migrate(&ctx).unwrap();
 
         assert_eq!(stats.origins_read, 2);
@@ -484,6 +514,7 @@ mod tests {
             create_test_profile(&dst_dir, "librewolf-sparse", Browser::LibreWolf),
             false,
             true,
+            false,
         );
         let stats = migrate(&ctx).unwrap();
 
